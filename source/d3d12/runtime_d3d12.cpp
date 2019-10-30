@@ -1626,8 +1626,8 @@ void reshade::d3d12::runtime_d3d12::detect_depth_source(draw_call_tracker &track
 
 	if (_has_high_network_activity)
 	{
-		update_depthstencil_texture(nullptr);
-		return;
+		//update_depthstencil_texture(nullptr);
+		//return;
 	}
 
 	if (depth_buffer_before_clear)
