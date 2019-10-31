@@ -12,7 +12,7 @@ bool imgui_key_input(const char *name, unsigned int key_data[4], const reshade::
 {
 	bool res = false;
 
-	char buf[48] = "Click to set key shortcut";
+	char buf[48] = u8"单击以设置快捷键";
 	if (key_data[0] || key_data[1] || key_data[2] || key_data[3])
 	{
 		memset(buf, 0, sizeof(buf)); // Clear existing key data
@@ -47,7 +47,7 @@ bool imgui_key_input(const char *name, unsigned int key_data[4], const reshade::
 	}
 	else if (ImGui::IsItemHovered())
 	{
-		ImGui::SetTooltip("Click in the field and press any key to change the shortcut to that key.");
+		ImGui::SetTooltip(u8"单击字段并按任意键将快捷方式更改为该键.");
 	}
 
 	return res;
