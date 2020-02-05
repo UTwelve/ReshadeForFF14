@@ -12,9 +12,14 @@ reshade::d3d9::state_block::state_block(IDirect3DDevice9 *device)
 
 	_device = device;
 
+#ifdef RESHADE_TEST_APPLICATION
+	// Avoid errors from the D3D9 debug runtime because the other slots return D3DERR_NOTFOUND with the test application
+	_num_simultaneous_rendertargets = 1;
+#else
 	D3DCAPS9 caps;
 	device->GetDeviceCaps(&caps);
 	_num_simultaneous_rendertargets = std::min(caps.NumSimultaneousRTs, DWORD(8));
+#endif
 }
 reshade::d3d9::state_block::~state_block()
 {

@@ -3,17 +3,20 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_command_list.hpp"
 #include "d3d12_command_queue.hpp"
 #include "d3d12_command_queue_downlevel.hpp"
+#include <mutex>
+
+static std::mutex s_global_mutex;
 
 D3D12CommandQueue::D3D12CommandQueue(D3D12Device *device, ID3D12CommandQueue *original) :
 	_orig(original),
 	_interface_version(0),
 	_device(device) {
-	assert(original != nullptr);
+	assert(_orig != nullptr && _device != nullptr);
 }
 
 bool D3D12CommandQueue::check_and_upgrade_interface(REFIID riid)
@@ -81,27 +84,24 @@ HRESULT STDMETHODCALLTYPE D3D12CommandQueue::QueryInterface(REFIID riid, void **
 }
 ULONG   STDMETHODCALLTYPE D3D12CommandQueue::AddRef()
 {
-	++_ref;
-
-	return _orig->AddRef();
+	_orig->AddRef();
+	return InterlockedIncrement(&_ref);
 }
 ULONG   STDMETHODCALLTYPE D3D12CommandQueue::Release()
 {
-	if (--_ref == 0)
-	{
+	const ULONG ref = InterlockedDecrement(&_ref);
+	if (ref != 0)
+		return _orig->Release(), ref;
+
 #if RESHADE_D3D12ON7
-		_downlevel->Release(); _downlevel = nullptr;
+	if (_downlevel != nullptr)
+		_downlevel->Release();
 #endif
-	}
 
-	// Decrease internal reference count and verify it against our own count
-	const ULONG ref = _orig->Release();
-	if (ref != 0 && _ref != 0)
-		return ref;
-	else if (ref != 0)
-		LOG(WARN) << "Reference count for ID3D12CommandQueue object " << this << " is inconsistent: " << ref << ", but expected 0.";
+	const ULONG ref_orig = _orig->Release();
+	if (ref_orig != 0)
+		LOG(WARN) << "Reference count for ID3D12CommandQueue object " << this << " is inconsistent.";
 
-	assert(_ref <= 0);
 #if RESHADE_VERBOSE_LOG
 	LOG(DEBUG) << "Destroyed ID3D12CommandQueue object " << this << ".";
 #endif
@@ -150,10 +150,11 @@ void    STDMETHODCALLTYPE D3D12CommandQueue::ExecuteCommandLists(UINT NumCommand
 		if (com_ptr<D3D12GraphicsCommandList> command_list_proxy;
 			SUCCEEDED(ppCommandLists[i]->QueryInterface(&command_list_proxy)))
 		{
-			const std::lock_guard<std::mutex> lock(_device->_device_global_mutex);
+			// Lock here in case there are multiple command queues
+			const std::lock_guard<std::mutex> lock(s_global_mutex);
 
 			// Merge command list trackers into device one
-			_device->_draw_call_tracker.merge(command_list_proxy->_draw_call_tracker);
+			_device->_buffer_detection.merge(command_list_proxy->_buffer_detection);
 
 			// Get original command list pointer from proxy object
 			command_lists[i] = command_list_proxy->_orig;

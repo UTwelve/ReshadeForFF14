@@ -3,28 +3,17 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_command_list.hpp"
 #include "d3d12_command_queue.hpp"
 
-extern reshade::log::message &operator<<(reshade::log::message &m, REFIID riid);
-
 D3D12Device::D3D12Device(ID3D12Device *original) :
 	_orig(original),
-	_interface_version(0) {
-	assert(original != nullptr);
-}
-
-void D3D12Device::clear_drawcall_stats(bool all)
-{
-	const std::lock_guard<std::mutex> lock(_device_global_mutex);
-
-	_clear_DSV_iter = 1;
-	_draw_call_tracker.reset();
-
-	if (all)
-		_depthstencil_resources_by_handle.clear();
+	_interface_version(0),
+	_buffer_detection(original) {
+	assert(_orig != nullptr);
+	_buffer_detection.init(_orig, nullptr, &_buffer_detection);
 }
 
 bool D3D12Device::check_and_upgrade_interface(REFIID riid)
@@ -83,22 +72,18 @@ HRESULT STDMETHODCALLTYPE D3D12Device::QueryInterface(REFIID riid, void **ppvObj
 }
 ULONG   STDMETHODCALLTYPE D3D12Device::AddRef()
 {
-	++_ref;
-
-	return _orig->AddRef();
+	_orig->AddRef();
+	return InterlockedIncrement(&_ref);
 }
 ULONG   STDMETHODCALLTYPE D3D12Device::Release()
 {
-	--_ref;
-
-	// Decrease internal reference count and verify it against our own count
-	const ULONG ref = _orig->Release();
-	if (ref != 0 && _ref != 0)
+	const ULONG ref = InterlockedDecrement(&_ref);
+	const ULONG ref_orig = _orig->Release();
+	if (ref != 0)
 		return ref;
-	else if (ref != 0)
-		LOG(WARN) << "Reference count for ID3D12Device" << _interface_version << " object " << this << " is inconsistent: " << ref << ", but expected 0.";
+	if (ref_orig != 0) // Verify internal reference count
+		LOG(WARN) << "Reference count for ID3D12Device" << _interface_version << " object " << this << " is inconsistent.";
 
-	assert(_ref <= 0);
 #if RESHADE_VERBOSE_LOG
 	LOG(DEBUG) << "Destroyed ID3D12Device" << _interface_version << " object " << this << ".";
 #endif
@@ -130,7 +115,7 @@ UINT    STDMETHODCALLTYPE D3D12Device::GetNodeCount()
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommandQueue(const D3D12_COMMAND_QUEUE_DESC *pDesc, REFIID riid, void **ppCommandQueue)
 {
-	LOG(INFO) << "Redirecting ID3D12Device::CreateCommandQueue" << '(' << this << ", " << pDesc << ", " << riid << ", " << ppCommandQueue << ')' << " ...";
+	LOG(INFO) << "Redirecting ID3D12Device::CreateCommandQueue" << '(' << "this = " << this << ", pDesc = " << pDesc << ", riid = " << riid << ", ppCommandQueue = " << ppCommandQueue << ')' << " ...";
 
 	if (ppCommandQueue == nullptr)
 		return E_INVALIDARG;
@@ -138,7 +123,7 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommandQueue(const D3D12_COMMAND_QU
 	const HRESULT hr = _orig->CreateCommandQueue(pDesc, riid, ppCommandQueue);
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> 'ID3D12Device::CreateCommandQueue' failed with error code " << std::hex << hr << std::dec << "!";
+		LOG(WARN) << "ID3D12Device::CreateCommandQueue failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -148,7 +133,7 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommandQueue(const D3D12_COMMAND_QU
 	if (command_queue_proxy->check_and_upgrade_interface(riid))
 	{
 #if RESHADE_VERBOSE_LOG
-		LOG(DEBUG) << "Returning ID3D12CommandQueue object " << command_queue_proxy << '.';
+		LOG(INFO) << "> Returning ID3D12CommandQueue object " << command_queue_proxy << '.';
 #endif
 		*ppCommandQueue = command_queue_proxy;
 	}
@@ -176,7 +161,7 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommandList(UINT nodeMask, D3D12_CO
 	const HRESULT hr = _orig->CreateCommandList(nodeMask, type, pCommandAllocator, pInitialState, riid, ppCommandList);
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> 'ID3D12Device::CreateCommandList' failed with error code " << std::hex << hr << std::dec << "!";
+		LOG(WARN) << "ID3D12Device::CreateCommandList failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -185,6 +170,8 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommandList(UINT nodeMask, D3D12_CO
 	// Upgrade to the actual interface version requested here (and only hook graphics command lists)
 	if (command_list_proxy->check_and_upgrade_interface(riid))
 	{
+		command_list_proxy->_buffer_detection.init(_orig, command_list_proxy->_orig, &_buffer_detection);
+
 		*ppCommandList = command_list_proxy;
 	}
 	else // Do not hook object if we do not support the requested interface or this is a compute command list
@@ -200,7 +187,7 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CheckFeatureSupport(D3D12_FEATURE Feature
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreateDescriptorHeap(const D3D12_DESCRIPTOR_HEAP_DESC *pDescriptorHeapDesc, REFIID riid, void **ppvHeap)
 {
-	return  _orig->CreateDescriptorHeap(pDescriptorHeapDesc, riid, ppvHeap);
+	return _orig->CreateDescriptorHeap(pDescriptorHeapDesc, riid, ppvHeap);
 }
 UINT    STDMETHODCALLTYPE D3D12Device::GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapType)
 {
@@ -229,12 +216,10 @@ void    STDMETHODCALLTYPE D3D12Device::CreateRenderTargetView(ID3D12Resource *pR
 void    STDMETHODCALLTYPE D3D12Device::CreateDepthStencilView(ID3D12Resource *pResource, const D3D12_DEPTH_STENCIL_VIEW_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
 {
 	_orig->CreateDepthStencilView(pResource, pDesc, DestDescriptor);
-
+#if RESHADE_DEPTH
 	if (pResource != nullptr)
-	{
-		const std::lock_guard<std::mutex> lock(_device_global_mutex);
-		_depthstencil_resources_by_handle[DestDescriptor.ptr] = pResource;
-	}
+		_buffer_detection.on_create_dsv(pResource, DestDescriptor);
+#endif
 }
 void    STDMETHODCALLTYPE D3D12Device::CreateSampler(const D3D12_SAMPLER_DESC *pDesc, D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
 {
@@ -258,7 +243,9 @@ D3D12_HEAP_PROPERTIES STDMETHODCALLTYPE D3D12Device::GetCustomHeapProperties(UIN
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommittedResource(const D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pResourceDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riidResource, void **ppvResource)
 {
-	// Remove D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE flag so that we can access depth stencil resources in post-processing shaders.
+	assert(pResourceDesc != nullptr);
+
+	// Remove D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE flag so that we can access depth-stencil resources in post-processing shaders.
 	// The flag is only valid in combination with D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL anyway (see https://docs.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_resource_flags), so can always remove it.
 	D3D12_RESOURCE_DESC new_desc = *pResourceDesc;
 	new_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
@@ -271,10 +258,20 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateHeap(const D3D12_HEAP_DESC *pDesc, 
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreatePlacedResource(ID3D12Heap *pHeap, UINT64 HeapOffset, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid, void **ppvResource)
 {
-	return _orig->CreatePlacedResource(pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
+	assert(pDesc != nullptr);
+
+	D3D12_RESOURCE_DESC new_desc = *pDesc;
+	new_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+	return _orig->CreatePlacedResource(pHeap, HeapOffset, &new_desc, InitialState, pOptimizedClearValue, riid, ppvResource);
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreateReservedResource(const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, REFIID riid, void **ppvResource)
 {
+	assert(pDesc != nullptr);
+
+	D3D12_RESOURCE_DESC new_desc = *pDesc;
+	new_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
 	return _orig->CreateReservedResource(pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreateSharedHandle(ID3D12DeviceChild *pObject, const SECURITY_ATTRIBUTES *pAttributes, DWORD Access, LPCWSTR Name, HANDLE *pHandle)
@@ -374,7 +371,7 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommandList1(UINT NodeMask, D3D12_C
 	const HRESULT hr = static_cast<ID3D12Device4 *>(_orig)->CreateCommandList1(NodeMask, Type, Flags, riid, ppCommandList);
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> 'ID3D12Device4::CreateCommandList1' failed with error code " << std::hex << hr << std::dec << "!";
+		LOG(WARN) << "ID3D12Device4::CreateCommandList1 failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -383,6 +380,8 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommandList1(UINT NodeMask, D3D12_C
 	// Upgrade to the actual interface version requested here (and only hook graphics command lists)
 	if (command_list_proxy->check_and_upgrade_interface(riid))
 	{
+		command_list_proxy->_buffer_detection.init(_orig, command_list_proxy->_orig, &_buffer_detection);
+
 		*ppCommandList = command_list_proxy;
 	}
 	else // Do not hook object if we do not support the requested interface or this is a compute command list
@@ -400,8 +399,13 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateProtectedResourceSession(const D3D1
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreateCommittedResource1(const D3D12_HEAP_PROPERTIES *pHeapProperties, D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialResourceState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, ID3D12ProtectedResourceSession *pProtectedSession, REFIID riidResource, void **ppvResource)
 {
+	assert(pDesc != nullptr);
+
+	D3D12_RESOURCE_DESC new_desc = *pDesc;
+	new_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
 	assert(_interface_version >= 4);
-	return static_cast<ID3D12Device4 *>(_orig)->CreateCommittedResource1(pHeapProperties, HeapFlags, pDesc, InitialResourceState, pOptimizedClearValue, pProtectedSession, riidResource, ppvResource);
+	return static_cast<ID3D12Device4 *>(_orig)->CreateCommittedResource1(pHeapProperties, HeapFlags, &new_desc, InitialResourceState, pOptimizedClearValue, pProtectedSession, riidResource, ppvResource);
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreateHeap1(const D3D12_HEAP_DESC *pDesc, ID3D12ProtectedResourceSession *pProtectedSession, REFIID riid, void **ppvHeap)
 {
@@ -410,8 +414,13 @@ HRESULT STDMETHODCALLTYPE D3D12Device::CreateHeap1(const D3D12_HEAP_DESC *pDesc,
 }
 HRESULT STDMETHODCALLTYPE D3D12Device::CreateReservedResource1(const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *pOptimizedClearValue, ID3D12ProtectedResourceSession *pProtectedSession, REFIID riid, void **ppvResource)
 {
+	assert(pDesc != nullptr);
+
+	D3D12_RESOURCE_DESC new_desc = *pDesc;
+	new_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
 	assert(_interface_version >= 4);
-	return static_cast<ID3D12Device4 *>(_orig)->CreateReservedResource1(pDesc, InitialState, pOptimizedClearValue, pProtectedSession, riid, ppvResource);
+	return static_cast<ID3D12Device4 *>(_orig)->CreateReservedResource1(&new_desc, InitialState, pOptimizedClearValue, pProtectedSession, riid, ppvResource);
 }
 D3D12_RESOURCE_ALLOCATION_INFO STDMETHODCALLTYPE D3D12Device::GetResourceAllocationInfo1(UINT VisibleMask, UINT NumResourceDescs, const D3D12_RESOURCE_DESC *pResourceDescs, D3D12_RESOURCE_ALLOCATION_INFO1 *pResourceAllocationInfo1)
 {

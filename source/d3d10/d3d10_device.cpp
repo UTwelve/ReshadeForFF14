@@ -3,107 +3,17 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "d3d10_device.hpp"
 #include "../dxgi/dxgi_device.hpp"
-#include "runtime_d3d10.hpp"
+#include "../dxgi/format_utils.hpp"
 
 D3D10Device::D3D10Device(IDXGIDevice1 *dxgi_device, ID3D10Device1 *original) :
 	_orig(original),
-	_dxgi_device(new DXGIDevice(dxgi_device, this)) {
-	assert(original != nullptr);
+	_dxgi_device(new DXGIDevice(dxgi_device, this)),
+	_buffer_detection(original) {
+	assert(_orig != nullptr);
 }
-
-void D3D10Device::clear_drawcall_stats()
-{
-	_clear_DSV_iter = 1;
-	_draw_call_tracker.reset();
-}
-
-#if RESHADE_DX10_CAPTURE_DEPTH_BUFFERS
-bool D3D10Device::save_depth_texture(ID3D10DepthStencilView *pDepthStencilView, bool cleared)
-{
-	if (_runtimes.empty())
-		return false;
-
-	const auto runtime = _runtimes.front();
-
-	if (!runtime->depth_buffer_before_clear)
-		return false;
-	if (!cleared && !runtime->extended_depth_buffer_detection)
-		return false;
-
-	assert(pDepthStencilView != nullptr);
-
-	// Retrieve texture from depth stencil
-	com_ptr<ID3D10Resource> resource;
-	pDepthStencilView->GetResource(&resource);
-
-	com_ptr<ID3D10Texture2D> texture;
-	if (FAILED(resource->QueryInterface(&texture)))
-		return false;
-
-	D3D10_TEXTURE2D_DESC desc;
-	texture->GetDesc(&desc);
-
-	// Check if aspect ratio is similar to the back buffer one
-	const float width_factor = float(runtime->frame_width()) / float(desc.Width);
-	const float height_factor = float(runtime->frame_height()) / float(desc.Height);
-	const float aspect_ratio = float(runtime->frame_width()) / float(runtime->frame_height());
-	const float texture_aspect_ratio = float(desc.Width) / float(desc.Height);
-
-	if (fabs(texture_aspect_ratio - aspect_ratio) > 0.1f || width_factor > 1.85f || height_factor > 1.85f || width_factor < 0.5f || height_factor < 0.5f)
-		return false; // No match, not a good fit
-
-	// In case the depth texture is retrieved, we make a copy of it and store it in an ordered map to use it later in the final rendering stage.
-	if ((runtime->cleared_depth_buffer_index == 0 && cleared) || (_clear_DSV_iter <= runtime->cleared_depth_buffer_index))
-	{
-		// Select an appropriate destination texture
-		com_ptr<ID3D10Texture2D> depth_texture_save = runtime->select_depth_texture_save(desc);
-		if (depth_texture_save == nullptr)
-			return false;
-
-		// Copy the depth texture. This is necessary because the content of the depth texture is cleared.
-		// This way, we can retrieve this content in the final rendering stage
-		CopyResource(depth_texture_save.get(), texture.get());
-
-		// Store the saved texture in the ordered map.
-		_draw_call_tracker.track_depth_texture(runtime->depth_buffer_texture_format, _clear_DSV_iter, texture.get(), pDepthStencilView, depth_texture_save, cleared);
-	}
-	else
-	{
-		// Store a null depth texture in the ordered map in order to display it even if the user chose a previous cleared texture.
-		// This way the texture will still be visible in the depth buffer selection window and the user can choose it.
-		_draw_call_tracker.track_depth_texture(runtime->depth_buffer_texture_format, _clear_DSV_iter, texture.get(), pDepthStencilView, nullptr, cleared);
-	}
-
-	_clear_DSV_iter++;
-
-	return true;
-}
-
-void D3D10Device::track_active_rendertargets(UINT NumViews, ID3D10RenderTargetView *const *ppRenderTargetViews, ID3D10DepthStencilView *pDepthStencilView)
-{
-	if (pDepthStencilView == nullptr || _runtimes.empty())
-		return;
-
-	const auto runtime = _runtimes.front();
-
-	_draw_call_tracker.track_rendertargets(runtime->depth_buffer_texture_format, pDepthStencilView, NumViews, ppRenderTargetViews);
-
-	save_depth_texture(pDepthStencilView, false);
-}
-void D3D10Device::track_cleared_depthstencil(UINT ClearFlags, ID3D10DepthStencilView *pDepthStencilView)
-{
-	if (pDepthStencilView == nullptr || _runtimes.empty())
-		return;
-
-	const auto runtime = _runtimes.front();
-
-	if (ClearFlags & D3D10_CLEAR_DEPTH || (runtime->depth_buffer_more_copies && ClearFlags & D3D10_CLEAR_STENCIL))
-		save_depth_texture(pDepthStencilView, true);
-}
-#endif
 
 bool D3D10Device::check_and_upgrade_interface(REFIID riid)
 {
@@ -141,22 +51,25 @@ HRESULT STDMETHODCALLTYPE D3D10Device::QueryInterface(REFIID riid, void **ppvObj
 }
 ULONG   STDMETHODCALLTYPE D3D10Device::AddRef()
 {
-	++_ref;
+	_orig->AddRef();
 
-	return _orig->AddRef();
+	// Add references to other objects that are coupled with the device
+	_dxgi_device->AddRef();
+
+	return InterlockedIncrement(&_ref);
 }
 ULONG   STDMETHODCALLTYPE D3D10Device::Release()
 {
-	--_ref;
+	// Release references to other objects that are coupled with the device
+	_dxgi_device->Release();
 
-	// Decrease internal reference count and verify it against our own count
-	const ULONG ref = _orig->Release();
-	if (ref != 0 && _ref != 0)
+	const ULONG ref = InterlockedDecrement(&_ref);
+	const ULONG ref_orig = _orig->Release();
+	if (ref != 0)
 		return ref;
-	else if (ref != 0)
-		LOG(WARN) << "Reference count for ID3D10Device1 object " << this << " is inconsistent: " << ref << ", but expected 0.";
+	if (ref_orig != 0) // Verify internal reference count
+		LOG(WARN) << "Reference count for ID3D10Device1 object " << this << " is inconsistent.";
 
-	assert(_ref <= 0);
 #if RESHADE_VERBOSE_LOG
 	LOG(DEBUG) << "Destroyed ID3D10Device1 object " << this << '.';
 #endif
@@ -188,12 +101,12 @@ void    STDMETHODCALLTYPE D3D10Device::VSSetShader(ID3D10VertexShader *pVertexSh
 void    STDMETHODCALLTYPE D3D10Device::DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation)
 {
 	_orig->DrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation);
-	_draw_call_tracker.on_draw(this, IndexCount);
+	_buffer_detection.on_draw(IndexCount);
 }
 void    STDMETHODCALLTYPE D3D10Device::Draw(UINT VertexCount, UINT StartVertexLocation)
 {
 	_orig->Draw(VertexCount, StartVertexLocation);
-	_draw_call_tracker.on_draw(this, VertexCount);
+	_buffer_detection.on_draw(VertexCount);
 }
 void    STDMETHODCALLTYPE D3D10Device::PSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D10Buffer *const *ppConstantBuffers)
 {
@@ -214,12 +127,12 @@ void    STDMETHODCALLTYPE D3D10Device::IASetIndexBuffer(ID3D10Buffer *pIndexBuff
 void    STDMETHODCALLTYPE D3D10Device::DrawIndexedInstanced(UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation, INT BaseVertexLocation, UINT StartInstanceLocation)
 {
 	_orig->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
-	_draw_call_tracker.on_draw(this, IndexCountPerInstance * InstanceCount);
+	_buffer_detection.on_draw(IndexCountPerInstance * InstanceCount);
 }
 void    STDMETHODCALLTYPE D3D10Device::DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, UINT StartInstanceLocation)
 {
 	_orig->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
-	_draw_call_tracker.on_draw(this, VertexCountPerInstance * InstanceCount);
+	_buffer_detection.on_draw(VertexCountPerInstance * InstanceCount);
 }
 void    STDMETHODCALLTYPE D3D10Device::GSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D10Buffer *const *ppConstantBuffers)
 {
@@ -255,16 +168,6 @@ void    STDMETHODCALLTYPE D3D10Device::GSSetSamplers(UINT StartSlot, UINT NumSam
 }
 void    STDMETHODCALLTYPE D3D10Device::OMSetRenderTargets(UINT NumViews, ID3D10RenderTargetView *const *ppRenderTargetViews, ID3D10DepthStencilView *pDepthStencilView)
 {
-#if RESHADE_DX10_CAPTURE_DEPTH_BUFFERS
-	track_active_rendertargets(NumViews, ppRenderTargetViews, pDepthStencilView);
-#endif
-
-	if (!_runtimes.empty())
-	{
-		const auto runtime = _runtimes.front();
-		runtime->on_set_depthstencil_view(pDepthStencilView);
-	}
-
 	_orig->OMSetRenderTargets(NumViews, ppRenderTargetViews, pDepthStencilView);
 }
 void    STDMETHODCALLTYPE D3D10Device::OMSetBlendState(ID3D10BlendState *pBlendState, const FLOAT BlendFactor[4], UINT SampleMask)
@@ -282,7 +185,7 @@ void    STDMETHODCALLTYPE D3D10Device::SOSetTargets(UINT NumBuffers, ID3D10Buffe
 void    STDMETHODCALLTYPE D3D10Device::DrawAuto()
 {
 	_orig->DrawAuto();
-	_draw_call_tracker.on_draw(this, 0);
+	_buffer_detection.on_draw(0);
 }
 void    STDMETHODCALLTYPE D3D10Device::RSSetState(ID3D10RasterizerState *pRasterizerState)
 {
@@ -314,16 +217,9 @@ void    STDMETHODCALLTYPE D3D10Device::ClearRenderTargetView(ID3D10RenderTargetV
 }
 void    STDMETHODCALLTYPE D3D10Device::ClearDepthStencilView(ID3D10DepthStencilView *pDepthStencilView, UINT ClearFlags, FLOAT Depth, UINT8 Stencil)
 {
-#if RESHADE_DX10_CAPTURE_DEPTH_BUFFERS
-	track_cleared_depthstencil(ClearFlags, pDepthStencilView);
+#if RESHADE_DEPTH
+	_buffer_detection.on_clear_depthstencil(ClearFlags, pDepthStencilView);
 #endif
-
-	if (!_runtimes.empty())
-	{
-		const auto runtime = _runtimes.front();
-		runtime->on_clear_depthstencil_view(pDepthStencilView);
-	}
-
 	_orig->ClearDepthStencilView(pDepthStencilView, ClearFlags, Depth, Stencil);
 }
 void    STDMETHODCALLTYPE D3D10Device::GenerateMips(ID3D10ShaderResourceView *pShaderResourceView)
@@ -405,14 +301,6 @@ void    STDMETHODCALLTYPE D3D10Device::GSGetSamplers(UINT StartSlot, UINT NumSam
 void    STDMETHODCALLTYPE D3D10Device::OMGetRenderTargets(UINT NumViews, ID3D10RenderTargetView **ppRenderTargetViews, ID3D10DepthStencilView **ppDepthStencilView)
 {
 	_orig->OMGetRenderTargets(NumViews, ppRenderTargetViews, ppDepthStencilView);
-
-	if (_runtimes.empty())
-		return;
-
-	const auto runtime = _runtimes.front();
-
-	if (ppDepthStencilView != nullptr)
-		runtime->on_get_depthstencil_view(*ppDepthStencilView);
 }
 void    STDMETHODCALLTYPE D3D10Device::OMGetBlendState(ID3D10BlendState **ppBlendState, FLOAT BlendFactor[4], UINT *pSampleMask)
 {
@@ -480,7 +368,23 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture1D(const D3D10_TEXTURE1D_DES
 }
 HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture2D(const D3D10_TEXTURE2D_DESC *pDesc, const D3D10_SUBRESOURCE_DATA *pInitialData, ID3D10Texture2D **ppTexture2D)
 {
-	return _orig->CreateTexture2D(pDesc, pInitialData, ppTexture2D);
+	assert(pDesc != nullptr);
+
+	// Add D3D10_BIND_SHADER_RESOURCE flag to all depth-stencil textures so that we can access them in post-processing shaders
+	D3D10_TEXTURE2D_DESC new_desc = *pDesc;
+	if (0 != (new_desc.BindFlags & D3D10_BIND_DEPTH_STENCIL))
+	{
+		new_desc.Format = make_dxgi_format_typeless(new_desc.Format);
+		new_desc.BindFlags |= D3D10_BIND_SHADER_RESOURCE;
+	}
+
+	const HRESULT hr = _orig->CreateTexture2D(&new_desc, pInitialData, ppTexture2D);
+	if (FAILED(hr))
+	{
+		LOG(WARN) << "ID3D10Device::CreateTexture2D failed with error code " << hr << '.';
+	}
+
+	return hr;
 }
 HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture3D(const D3D10_TEXTURE3D_DESC *pDesc, const D3D10_SUBRESOURCE_DATA *pInitialData, ID3D10Texture3D **ppTexture3D)
 {
@@ -488,7 +392,42 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateTexture3D(const D3D10_TEXTURE3D_DES
 }
 HRESULT STDMETHODCALLTYPE D3D10Device::CreateShaderResourceView(ID3D10Resource *pResource, const D3D10_SHADER_RESOURCE_VIEW_DESC *pDesc, ID3D10ShaderResourceView **ppSRView)
 {
-	return _orig->CreateShaderResourceView(pResource, pDesc, ppSRView);
+	D3D10_SHADER_RESOURCE_VIEW_DESC new_desc =
+		pDesc != nullptr ? *pDesc : D3D10_SHADER_RESOURCE_VIEW_DESC {};
+
+	// A view cannot be created with a typeless format (which was set 'CreateTexture2D'), so fix it
+	if (pDesc == nullptr || pDesc->Format == DXGI_FORMAT_UNKNOWN)
+	{
+		D3D10_TEXTURE2D_DESC texture_desc;
+		if (com_ptr<ID3D10Texture2D> texture;
+			SUCCEEDED(pResource->QueryInterface(&texture)))
+		{
+			texture->GetDesc(&texture_desc);
+
+			// Only textures with the depth-stencil bind flag where modified, so skip all others
+			if (0 != (texture_desc.BindFlags & D3D10_BIND_DEPTH_STENCIL))
+			{
+				new_desc.Format = make_dxgi_format_normal(texture_desc.Format);
+
+				if (pDesc == nullptr) // Only need to set the rest of the fields if the application did not pass in a valid description already
+				{
+					new_desc.ViewDimension = D3D10_SRV_DIMENSION_TEXTURE2D;
+					new_desc.Texture2D.MipLevels = texture_desc.MipLevels;
+					new_desc.Texture2D.MostDetailedMip = 0;
+				}
+
+				pDesc = &new_desc;
+			}
+		}
+	}
+
+	const HRESULT hr = _orig->CreateShaderResourceView(pResource, pDesc, ppSRView);
+	if (FAILED(hr))
+	{
+		LOG(WARN) << "ID3D10Device::CreateShaderResourceView failed with error code " << hr << '.';
+	}
+
+	return hr;
 }
 HRESULT STDMETHODCALLTYPE D3D10Device::CreateRenderTargetView(ID3D10Resource *pResource, const D3D10_RENDER_TARGET_VIEW_DESC *pDesc, ID3D10RenderTargetView **ppRTView)
 {
@@ -496,7 +435,37 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateRenderTargetView(ID3D10Resource *pR
 }
 HRESULT STDMETHODCALLTYPE D3D10Device::CreateDepthStencilView(ID3D10Resource *pResource, const D3D10_DEPTH_STENCIL_VIEW_DESC *pDesc, ID3D10DepthStencilView **ppDepthStencilView)
 {
-	return _orig->CreateDepthStencilView(pResource, pDesc, ppDepthStencilView);
+	D3D10_DEPTH_STENCIL_VIEW_DESC new_desc =
+		pDesc != nullptr ? *pDesc : D3D10_DEPTH_STENCIL_VIEW_DESC {};
+
+	// A view cannot be created with a typeless format (which was set in 'CreateTexture2D'), so fix it
+	if (pDesc == nullptr || pDesc->Format == DXGI_FORMAT_UNKNOWN)
+	{
+		D3D10_TEXTURE2D_DESC texture_desc;
+		if (com_ptr<ID3D10Texture2D> texture;
+			SUCCEEDED(pResource->QueryInterface(&texture)))
+		{
+			texture->GetDesc(&texture_desc);
+
+			new_desc.Format = make_dxgi_format_dsv(texture_desc.Format);
+
+			if (pDesc == nullptr) // Only need to set the rest of the fields if the application did not pass in a valid description already
+			{
+				new_desc.ViewDimension = D3D10_DSV_DIMENSION_TEXTURE2D;
+				new_desc.Texture2D.MipSlice = 0;
+			}
+
+			pDesc = &new_desc;
+		}
+	}
+
+	const HRESULT hr = _orig->CreateDepthStencilView(pResource, pDesc, ppDepthStencilView);
+	if (FAILED(hr))
+	{
+		LOG(WARN) << "ID3D10Device::CreateDepthStencilView failed with error code " << hr << '.';
+	}
+
+	return hr;
 }
 HRESULT STDMETHODCALLTYPE D3D10Device::CreateInputLayout(const D3D10_INPUT_ELEMENT_DESC *pInputElementDescs, UINT NumElements, const void *pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength, ID3D10InputLayout **ppInputLayout)
 {
@@ -581,7 +550,40 @@ void    STDMETHODCALLTYPE D3D10Device::GetTextFilterSize(UINT *pWidth, UINT *pHe
 
 HRESULT STDMETHODCALLTYPE D3D10Device::CreateShaderResourceView1(ID3D10Resource *pResource, const D3D10_SHADER_RESOURCE_VIEW_DESC1 *pDesc, ID3D10ShaderResourceView1 **ppSRView)
 {
-	return _orig->CreateShaderResourceView1(pResource, pDesc, ppSRView);
+	D3D10_SHADER_RESOURCE_VIEW_DESC1 new_desc =
+		pDesc != nullptr ? *pDesc : D3D10_SHADER_RESOURCE_VIEW_DESC1 {};
+
+	if (pDesc == nullptr || pDesc->Format == DXGI_FORMAT_UNKNOWN)
+	{
+		D3D10_TEXTURE2D_DESC texture_desc;
+		if (com_ptr<ID3D10Texture2D> texture;
+			SUCCEEDED(pResource->QueryInterface(&texture)))
+		{
+			texture->GetDesc(&texture_desc);
+
+			if (0 != (texture_desc.BindFlags & D3D10_BIND_DEPTH_STENCIL))
+			{
+				new_desc.Format = make_dxgi_format_normal(texture_desc.Format);
+
+				if (pDesc == nullptr)
+				{
+					new_desc.ViewDimension = D3D10_1_SRV_DIMENSION_TEXTURE2D;
+					new_desc.Texture2D.MipLevels = texture_desc.MipLevels;
+					new_desc.Texture2D.MostDetailedMip = 0;
+				}
+
+				pDesc = &new_desc;
+			}
+		}
+	}
+
+	const HRESULT hr = _orig->CreateShaderResourceView1(pResource, pDesc, ppSRView);
+	if (FAILED(hr))
+	{
+		LOG(WARN) << "ID3D10Device1::CreateShaderResourceView1 failed with error code " << hr << '.';
+	}
+
+	return hr;
 }
 HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState1(const D3D10_BLEND_DESC1 *pBlendStateDesc, ID3D10BlendState1 **ppBlendState)
 {

@@ -5,7 +5,10 @@
 
 #include "effect_parser.hpp"
 #include "effect_codegen.hpp"
-#include <assert.h>
+#include <cmath> // signbit, isinf, isnan
+#include <cstdio> // snprintf
+#include <cassert>
+#include <algorithm> // std::max
 #include <unordered_set>
 
 using namespace reshadefx;
@@ -39,24 +42,44 @@ private:
 	std::unordered_map<id, std::string> _blocks;
 	bool _debug_info = false;
 	bool _uniforms_to_spec_constants = false;
-	unsigned int _current_ubo_offset = 0;
 	std::unordered_map<id, id> _remapped_sampler_variables;
+
+	// Only write compatibility intrinsics to result if they are actually in use
+	bool _uses_fmod = false;
+	bool _uses_componentwise_or = false;
+	bool _uses_componentwise_and = false;
+	bool _uses_componentwise_cond = false;
 
 	void write_result(module &module) override
 	{
 		module = std::move(_module);
 
-		module.hlsl +=
-			"float hlsl_fmod(float x, float y) { return x - y * trunc(x / y); }\n"
-			" vec2 hlsl_fmod( vec2 x,  vec2 y) { return x - y * trunc(x / y); }\n"
-			" vec3 hlsl_fmod( vec3 x,  vec3 y) { return x - y * trunc(x / y); }\n"
-			" vec4 hlsl_fmod( vec4 x,  vec4 y) { return x - y * trunc(x / y); }\n"
-			" mat2 hlsl_fmod( mat2 x,  mat2 y) { return x - matrixCompMult(y, mat2(trunc(x[0] / y[0]), trunc(x[1] / y[1]))); }\n"
-			" mat3 hlsl_fmod( mat3 x,  mat3 y) { return x - matrixCompMult(y, mat3(trunc(x[0] / y[0]), trunc(x[1] / y[1]), trunc(x[2] / y[2]))); }\n"
-			" mat4 hlsl_fmod( mat4 x,  mat4 y) { return x - matrixCompMult(y, mat4(trunc(x[0] / y[0]), trunc(x[1] / y[1]), trunc(x[2] / y[2]), trunc(x[3] / y[3]))); }\n";
+		if (_uses_fmod)
+			module.hlsl += "float fmodHLSL(float x, float y) { return x - y * trunc(x / y); }\n"
+				"vec2 fmodHLSL(vec2 x, vec2 y) { return x - y * trunc(x / y); }\n"
+				"vec3 fmodHLSL(vec3 x, vec3 y) { return x - y * trunc(x / y); }\n"
+				"vec4 fmodHLSL(vec4 x, vec4 y) { return x - y * trunc(x / y); }\n"
+				"mat2 fmodHLSL(mat2 x, mat2 y) { return x - matrixCompMult(y, mat2(trunc(x[0] / y[0]), trunc(x[1] / y[1]))); }\n"
+				"mat3 fmodHLSL(mat3 x, mat3 y) { return x - matrixCompMult(y, mat3(trunc(x[0] / y[0]), trunc(x[1] / y[1]), trunc(x[2] / y[2]))); }\n"
+				"mat4 fmodHLSL(mat4 x, mat4 y) { return x - matrixCompMult(y, mat4(trunc(x[0] / y[0]), trunc(x[1] / y[1]), trunc(x[2] / y[2]), trunc(x[3] / y[3]))); }\n";
+		if (_uses_componentwise_or)
+			module.hlsl +=
+				"bvec2 compOr(bvec2 a, bvec2 b) { return bvec2(a.x || b.x, a.y || b.y); }\n"
+				"bvec3 compOr(bvec3 a, bvec3 b) { return bvec3(a.x || b.x, a.y || b.y, a.z || b.z); }\n"
+				"bvec4 compOr(bvec4 a, bvec4 b) { return bvec4(a.x || b.x, a.y || b.y, a.z || b.z, a.w || b.w); }\n";
+		if (_uses_componentwise_and)
+			module.hlsl +=
+				"bvec2 compAnd(bvec2 a, bvec2 b) { return bvec2(a.x && b.x, a.y && b.y); }\n"
+				"bvec3 compAnd(bvec3 a, bvec3 b) { return bvec3(a.x && b.x, a.y && b.y, a.z && b.z); }\n"
+				"bvec4 compAnd(bvec4 a, bvec4 b) { return bvec4(a.x && b.x, a.y && b.y, a.z && b.z, a.w && b.w); }\n";
+		if (_uses_componentwise_cond)
+			module.hlsl +=
+				"vec2 compCond(bvec2 cond, vec2 a, vec2 b) { return vec2(cond.x ? a.x : b.x, cond.y ? a.y : b.y); }\n"
+				"vec3 compCond(bvec3 cond, vec3 a, vec3 b) { return vec3(cond.x ? a.x : b.x, cond.y ? a.y : b.y, cond.z ? a.z : b.z); }\n"
+				"vec4 compCond(bvec4 cond, vec4 a, vec4 b) { return vec4(cond.x ? a.x : b.x, cond.y ? a.y : b.y, cond.z ? a.z : b.z, cond.w ? a.w : b.w); }\n";
 
 		if (!_ubo_block.empty())
-			module.hlsl += "layout(std140, binding = 0) uniform _Globals {\n" + _ubo_block + "};\n";
+			module.hlsl += "layout(std140, column_major, binding = 0) uniform _Globals {\n" + _ubo_block + "};\n";
 		module.hlsl += _blocks.at(0);
 	}
 
@@ -146,7 +169,7 @@ private:
 			elem_type.array_length = 0;
 
 			write_type<false, false>(s, elem_type);
-			s += "[](";
+			s += '[' + std::to_string(type.array_length) + "](";
 
 			for (int i = 0; i < type.array_length; ++i)
 			{
@@ -164,13 +187,7 @@ private:
 		assert(type.is_numeric());
 
 		if (!type.is_scalar())
-		{
-			if (type.is_matrix())
-				s += "transpose(";
-
-			write_type<false, false>(s, type);
-			s += '(';
-		}
+			write_type<false, false>(s, type), s += '(';
 
 		for (unsigned int i = 0, components = type.components(); i < components; ++i)
 		{
@@ -194,8 +211,8 @@ private:
 					s += std::signbit(data.as_float[i]) ? "1.0/0.0/*inf*/" : "-1.0/0.0/*-inf*/";
 					break;
 				}
-				std::string temp(_scprintf("%.8f", data.as_float[i]), '\0');
-				sprintf_s(temp.data(), temp.size() + 1, "%.8f", data.as_float[i]);
+				char temp[64] = "";
+				std::snprintf(temp, sizeof(temp), "%.8f", data.as_float[i]);
 				s += temp;
 				break;
 			}
@@ -205,12 +222,7 @@ private:
 		}
 
 		if (!type.is_scalar())
-		{
-			if (type.is_matrix())
-				s += ')';
-
 			s += ')';
-		}
 	}
 	void write_location(std::string &s, const location &loc) const
 	{
@@ -230,18 +242,18 @@ private:
 		return '_' + std::to_string(id);
 	}
 
-	template <naming naming = naming::general>
+	template <naming naming_type = naming::general>
 	void define_name(const id id, std::string name)
 	{
 		assert(!name.empty());
-		if constexpr (naming != naming::expression)
+		if constexpr (naming_type != naming::expression)
 			if (name[0] == '_')
 				return; // Filter out names that may clash with automatic ones
-		if constexpr (naming != naming::reserved)
-			name = escape_name(name);
-		if constexpr (naming == naming::general)
+		if constexpr (naming_type != naming::reserved)
+			name = escape_name(std::move(name));
+		if constexpr (naming_type == naming::general)
 			if (std::find_if(_names.begin(), _names.end(), [&name](const auto &it) { return it.second == name; }) != _names.end())
-				name += '_' + std::to_string(id);
+				name += '_' + std::to_string(id); // Append a numbered suffix if the name already exists
 		_names[id] = std::move(name);
 	}
 
@@ -259,13 +271,13 @@ private:
 			"faceforward", "textureLod", "textureLodOffset", "texelFetch", "main"
 		};
 
-		// Append underscore to reserved names
+		// Append something to reserved names so that they do not fail to compile
 		if (name.compare(0, 3, "gl_") == 0 || s_reserverd_names.count(name))
-			name += '_';
+			name += "_RESERVED"; // Do not append an underscore at the end, since another one may get added in 'define_name'
 
 		// Remove double underscore symbols from name which can occur due to namespaces but are not allowed in GLSL
 		for (size_t pos = 0; (pos = name.find("__", pos)) != std::string::npos; pos += 3)
-			name.replace(pos, 2, "_US");
+			name.replace(pos, 2, "_UNDERSCORE");
 
 		return name;
 	}
@@ -339,6 +351,19 @@ private:
 	}
 	id   define_uniform(const location &loc, uniform_info &info) override
 	{
+		// GLSL specification on std140 layout:
+		// 1. If the member is a scalar consuming N basic machine units, the base alignment is N.
+		// 2. If the member is a two- or four-component vector with components consuming N basic machine units, the base alignment is 2N or 4N, respectively.
+		// 3. If the member is a three-component vector with components consuming N basic machine units, the base alignment is 4N.
+		// 4. If the member is an array of scalars or vectors, the base alignment and array stride are set to match the base alignment of a single array element,
+		//    according to rules (1), (2), and (3), and rounded up to the base alignment of a four-component vector.
+		// 5. If the member is a column-major matrix with C columns and R rows, the matrix is stored identically to an array of C column vectors with R components each, according to rule (4).
+		// 7. If the member is a row-major matrix with C columns and R rows, the matrix is stored identically to an array of R row vectors with C components each, according to rule (4).
+		uint32_t alignment = info.type.is_array() || info.type.is_matrix() ? 16u : (info.type.rows == 3 ? 4 : info.type.rows) * 4;
+		info.size = info.type.is_matrix() ? alignment * info.type.rows /* column major layout, with row major layout this would be columns */ : info.type.rows * 4;
+		if (info.type.is_array())
+			info.size = std::max(16u, info.size) * info.type.array_length;
+
 		const id res = make_id();
 
 		define_name<naming::unique>(res, info.name);
@@ -360,22 +385,22 @@ private:
 		}
 		else
 		{
-			// GLSL specification on std140 layout:
-			// 1. If the member is a scalar consuming N basic machine units, the base alignment is N.
-			// 2. If the member is a two- or four-component vector with components consuming N basic machine units, the base alignment is 2N or 4N, respectively.
-			// 3. If the member is a three-component vector with components consuming N basic machine units, the base alignment is 4N.
-			const unsigned int size = 4 * info.type.rows * info.type.cols * std::max(1, info.type.array_length);
-			const unsigned int alignment = 4 * (info.type.rows == 3 ? 4 : info.type.rows) * info.type.cols * std::max(1, info.type.array_length);
-
-			info.size = size;
-			info.offset = (_current_ubo_offset % alignment != 0) ? _current_ubo_offset + alignment - _current_ubo_offset % alignment : _current_ubo_offset;
-			_current_ubo_offset = info.offset + info.size;
+			// Adjust offset according to alignment rules from above
+			alignment -= 1;
+			info.offset = (_module.total_uniform_size + alignment) & ~alignment;
+			_module.total_uniform_size = info.offset + info.size;
 
 			write_location(_ubo_block, loc);
 
 			_ubo_block += '\t';
+			// Note: All matrices are floating-point, even if the uniform type says different!!
 			write_type(_ubo_block, info.type);
-			_ubo_block += ' ' + id_to_name(res) + ";\n";
+			_ubo_block += ' ' + id_to_name(res);
+
+			if (info.type.is_array())
+				_ubo_block += '[' + std::to_string(info.type.array_length) + ']';
+
+			_ubo_block += ";\n";
 
 			_module.uniforms.push_back(info);
 		}
@@ -421,10 +446,13 @@ private:
 	{
 		info.definition = make_id();
 
-		if (is_entry_point)
-			define_name<naming::reserved>(info.definition, "main");
-		else
+		// Name is used in other places like the "ENTRY_POINT" defines, so escape it here
+		info.unique_name = escape_name(info.unique_name);
+
+		if (!is_entry_point)
 			define_name<naming::unique>(info.definition, info.unique_name);
+		else
+			define_name<naming::reserved>(info.definition, "main");
 
 		std::string &code = _blocks.at(_current_block);
 
@@ -461,15 +489,18 @@ private:
 
 		return info.definition;
 	}
+
 	void define_entry_point(const function_info &func, bool is_ps) override
 	{
 		if (const auto it = std::find_if(_module.entry_points.begin(), _module.entry_points.end(),
 			[&func](const auto &ep) { return ep.name == func.unique_name; }); it != _module.entry_points.end())
 			return;
 
-		_module.entry_points.push_back(entry_point_info { func.unique_name, is_ps });
+		_module.entry_points.push_back({ func.unique_name, is_ps });
 
 		_blocks.at(0) += "#ifdef ENTRY_POINT_" + func.unique_name + '\n';
+		if (is_ps)
+			_blocks.at(0) += "layout(origin_upper_left) in vec4 gl_FragCoord;\n";
 
 		function_info entry_point;
 		entry_point.return_type = { type::t_void };
@@ -615,7 +646,7 @@ private:
 			write_type(code, func.return_type), code += " _return = ";
 		// All other output types can write to the output variable directly
 		else if (!func.return_type.is_void())
-			code += "_return = ";
+			code += escape_name_with_builtins("_return", func.return_semantic) + " = ";
 
 		// Call the function this entry point refers to
 		code += id_to_name(func.definition) + '(';
@@ -697,33 +728,40 @@ private:
 
 		const id res = make_id();
 
-		std::string expr_code = id_to_name(exp.base);
+		std::string type, expr_code = id_to_name(exp.base);
 
 		for (const auto &op : exp.chain)
 		{
 			switch (op.op)
 			{
 			case expression::operation::op_cast:
-				{ std::string type; write_type<false, false>(type, op.to);
-				expr_code = type + '(' + expr_code + ')'; }
+				type.clear();
+				write_type<false, false>(type, op.to);
+				expr_code = type + '(' + expr_code + ')';
 				break;
 			case expression::operation::op_member:
 				expr_code += '.';
 				expr_code += escape_name(find_struct(op.from.definition).member_list[op.index].name);
 				break;
 			case expression::operation::op_dynamic_index:
-				expr_code += '[' + id_to_name(op.index) + ']';
+				// For matrices this will extract a column, but that is fine, since they are initialized column-wise too
+				// Also cast to an integer, since it could be a boolean too, but GLSL does not allow those in index expressions
+				expr_code += "[int(" + id_to_name(op.index) + ")]";
 				break;
 			case expression::operation::op_constant_index:
-				expr_code += '[' + std::to_string(op.index) + ']';
+				if (op.from.is_vector() && !op.from.is_array())
+					expr_code += '.',
+					expr_code += "xyzw"[op.index];
+				else
+					expr_code += '[' + std::to_string(op.index) + ']';
 				break;
 			case expression::operation::op_swizzle:
 				if (op.from.is_matrix())
 				{
 					if (op.swizzle[1] < 0)
 					{
-						const unsigned int row = op.swizzle[0] % 4;
-						const unsigned int col = (op.swizzle[0] - row) / 4;
+						const int row = (op.swizzle[0] % 4);
+						const int col = (op.swizzle[0] - row) / 4;
 
 						expr_code += '[' + std::to_string(row) + "][" + std::to_string(col) + ']';
 					}
@@ -731,6 +769,7 @@ private:
 					{
 						// TODO: Implement matrix to vector swizzles
 						assert(false);
+						expr_code += "_NOT_IMPLEMENTED_"; // Make sure compilation fails
 					}
 				}
 				else
@@ -743,11 +782,20 @@ private:
 			}
 		}
 
+		// GLSL matrices are always floating point, so need to cast result to the target type
+		if (!exp.chain.empty() && exp.chain[0].from.is_matrix() && !exp.chain[0].from.is_floating_point())
+		{
+			type.clear();
+			write_type<false, false>(type, exp.type);
+			expr_code = type + '(' + expr_code + ')';
+		}
+
 		if (force_new_id)
 		{
 			// Need to store value in a new variable to comply with request for a new ID
 			std::string &code = _blocks.at(_current_block);
 
+			code += '\t';
 			write_type(code, exp.type);
 			code += ' ' + id_to_name(res) + " = " + expr_code + ";\n";
 		}
@@ -761,7 +809,8 @@ private:
 	}
 	void emit_store(const expression &exp, id value) override
 	{
-		if (const auto it = _remapped_sampler_variables.find(exp.base); it != _remapped_sampler_variables.end())
+		if (const auto it = _remapped_sampler_variables.find(exp.base);
+			it != _remapped_sampler_variables.end())
 		{
 			assert(it->second == 0);
 			it->second = value;
@@ -783,7 +832,7 @@ private:
 				code += escape_name(find_struct(op.from.definition).member_list[op.index].name);
 				break;
 			case expression::operation::op_dynamic_index:
-				code += '[' + id_to_name(op.index) + ']';
+				code += "[int(" + id_to_name(op.index) + ")]";
 				break;
 			case expression::operation::op_constant_index:
 				code += '[' + std::to_string(op.index) + ']';
@@ -793,8 +842,8 @@ private:
 				{
 					if (op.swizzle[1] < 0)
 					{
-						const unsigned int row = op.swizzle[0] % 4;
-						const unsigned int col = (op.swizzle[0] - row) / 4;
+						const int row = (op.swizzle[0] % 4);
+						const int col = (op.swizzle[0] - row) / 4;
 
 						code += '[' + std::to_string(row) + "][" + std::to_string(col) + ']';
 					}
@@ -802,6 +851,7 @@ private:
 					{
 						// TODO: Implement matrix to vector swizzles
 						assert(false);
+						code += "_NOT_IMPLEMENTED_"; // Make sure compilation fails
 					}
 				}
 				else
@@ -814,7 +864,14 @@ private:
 			}
 		}
 
-		code += " = " + id_to_name(value) + ";\n";
+		code += " = ";
+
+		// GLSL matrices are always floating point, so need to cast type
+		if (!exp.chain.empty() && exp.chain[0].from.is_matrix() && !exp.chain[0].from.is_floating_point())
+			// Only supporting scalar assignments to matrices currently, so can assume to always cast to float
+			code += "float(" + id_to_name(value) + ");\n";
+		else
+			code += id_to_name(value) + ";\n";
 	}
 
 	id   emit_constant(const type &type, const constant &data) override
@@ -929,7 +986,8 @@ private:
 		case tokenid::percent:
 		case tokenid::percent_equal:
 			if (type.is_floating_point())
-				intrinsic = "hlsl_fmod";
+				intrinsic = "fmodHLSL",
+				_uses_fmod = true;
 			else
 				operator_code = '%';
 			break;
@@ -954,10 +1012,18 @@ private:
 			operator_code = ">>";
 			break;
 		case tokenid::pipe_pipe:
-			operator_code = "||";
+			if (type.is_vector())
+				intrinsic = "compOr",
+				_uses_componentwise_or = true;
+			else
+				operator_code = "||";
 			break;
 		case tokenid::ampersand_ampersand:
-			operator_code = "&&";
+			if (type.is_vector())
+				intrinsic = "compAnd",
+				_uses_componentwise_and = true;
+			else
+				operator_code = "&&";
 			break;
 		case tokenid::less:
 			if (type.is_vector())
@@ -1010,7 +1076,8 @@ private:
 	}
 	id   emit_ternary_op(const location &loc, tokenid op, const type &res_type, id condition, id true_value, id false_value) override
 	{
-		assert(op == tokenid::question); /* unreferenced parameter */ op;
+		if (op != tokenid::question)
+			return assert(false), 0; // Should never happen, since this is the only ternary operator currently supported
 
 		const id res = make_id();
 
@@ -1027,13 +1094,11 @@ private:
 
 		code += " = ";
 
-		// GLSL requires the selection first expression to be a scalar boolean
-		if (!res_type.is_scalar())
-			code += "all(" + id_to_name(condition) + ')';
-		else
-			code += id_to_name(condition);
-
-		code += " ? " + id_to_name(true_value) + " : " + id_to_name(false_value) + ";\n";
+		if (res_type.is_vector())
+			code += "compCond(" + id_to_name(condition) + ", " + id_to_name(true_value) + ", " + id_to_name(false_value) + ");\n",
+			_uses_componentwise_cond = true;
+		else // GLSL requires the conditional expression to be a scalar boolean
+			code += id_to_name(condition) + " ? " + id_to_name(true_value) + " : " + id_to_name(false_value) + ";\n";
 
 		return res;
 	}
@@ -1138,9 +1203,6 @@ private:
 
 		code += " = ";
 
-		if (!type.is_array() && type.is_matrix())
-			code += "transpose(";
-
 		write_type<false, false>(code, type);
 
 		if (type.is_array())
@@ -1155,9 +1217,6 @@ private:
 			if (i < num_args - 1)
 				code += ", ";
 		}
-
-		if (!type.is_array() && type.is_matrix())
-			code += ')';
 
 		code += ");\n";
 
@@ -1384,6 +1443,15 @@ private:
 		std::string &code = _blocks.at(_current_block);
 
 		code += "\tdiscard;\n";
+
+		const auto &return_type = _functions.back()->return_type;
+		if (!return_type.is_void())
+		{
+			// Add a return statement to exit functions in case discard is the last control flow statement
+			code += "\treturn ";
+			write_constant(code, return_type, constant());
+			code += ";\n";
+		}
 
 		return set_block(0);
 	}

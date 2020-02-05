@@ -3,15 +3,16 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "d3d11_device.hpp"
+#include "d3d11_device_context.hpp"
 #include "d3d11_command_list.hpp"
 #include "runtime_d3d11.hpp"
 
 D3D11CommandList::D3D11CommandList(D3D11Device *device, ID3D11CommandList *original) :
 	_orig(original),
 	_device(device) {
-	assert(original != nullptr);
+	assert(_orig != nullptr && _device != nullptr);
 }
 
 bool D3D11CommandList::check_and_upgrade_interface(REFIID riid)
@@ -41,22 +42,18 @@ HRESULT STDMETHODCALLTYPE D3D11CommandList::QueryInterface(REFIID riid, void **p
 }
 ULONG   STDMETHODCALLTYPE D3D11CommandList::AddRef()
 {
-	++_ref;
-
-	return _orig->AddRef();
+	_orig->AddRef();
+	return InterlockedIncrement(&_ref);
 }
 ULONG   STDMETHODCALLTYPE D3D11CommandList::Release()
 {
-	--_ref;
-
-	// Decrease internal reference count and verify it against our own count
-	const ULONG ref = _orig->Release();
-	if (ref != 0 && _ref != 0)
+	const ULONG ref = InterlockedDecrement(&_ref);
+	const ULONG ref_orig = _orig->Release();
+	if (ref != 0)
 		return ref;
-	else if (ref != 0)
-		LOG(WARN) << "Reference count for ID3D11CommandList object " << this << " is inconsistent: " << ref << ", but expected 0.";
+	if (ref_orig != 0)
+		LOG(WARN) << "Reference count for ID3D11CommandList object " << this << " is inconsistent.";
 
-	assert(_ref <= 0);
 #if RESHADE_VERBOSE_LOG
 	LOG(DEBUG) << "Destroyed ID3D11CommandList object " << this << '.';
 #endif

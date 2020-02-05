@@ -5,8 +5,13 @@
 
 #pragma once
 
+#include <cassert>
 #include <vulkan.h>
-#include <assert.h>
+
+// Windows SDK headers define these, which breaks the dispatch table
+#undef CreateEvent
+#undef CreateSemaphore
+
 #include "vk_layer_dispatch_table.h"
 
 template <VkObjectType type>
@@ -29,6 +34,13 @@ struct vk_handle_traits<VK_OBJECT_TYPE_BUFFER>
 	using T = VkBuffer;
 	static inline void destroy(VkDevice device, const VkLayerDispatchTable &vk, T obj) { vk.DestroyBuffer(device, obj, nullptr); }
 };
+template <>
+struct vk_handle_traits<VK_OBJECT_TYPE_BUFFER_VIEW>
+{
+	using T = VkBufferView;
+	static inline void destroy(VkDevice device, const VkLayerDispatchTable &vk, T obj) { vk.DestroyBufferView(device, obj, nullptr); }
+};
+
 template <>
 struct vk_handle_traits<VK_OBJECT_TYPE_SHADER_MODULE>
 {
@@ -87,12 +99,8 @@ struct vk_handle
 		return *this;
 	}
 
-	bool operator==(T rhs) const { return _object == rhs; }
 	bool operator==(const vk_handle &rhs) const { return _object == rhs._object; }
-	friend bool operator==(T lhs, const vk_handle &rhs) { return rhs.operator==(lhs); }
-	bool operator!=(T rhs) const { return _object != rhs; }
 	bool operator!=(const vk_handle &rhs) const { return _object != rhs._object; }
-	friend bool operator!=(T lhs, const vk_handle &rhs) { return rhs.operator!=(lhs); }
 
 	// Default operator used for sorting
 	friend bool operator< (const vk_handle &lhs, const vk_handle &rhs) { return lhs._object < rhs._object; }

@@ -3,131 +3,16 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "d3d12_device.hpp"
 #include "d3d12_command_list.hpp"
-#include "runtime_d3d12.hpp"
 
 D3D12GraphicsCommandList::D3D12GraphicsCommandList(D3D12Device *device, ID3D12GraphicsCommandList *original) :
 	_orig(original),
 	_interface_version(0),
 	_device(device) {
-	assert(original != nullptr);
+	assert(_orig != nullptr && _device != nullptr);
 }
-
-#if RESHADE_DX12_CAPTURE_DEPTH_BUFFERS
-bool D3D12GraphicsCommandList::save_depth_texture(D3D12_CPU_DESCRIPTOR_HANDLE pDepthStencilView, bool cleared)
-{
-	if (_device->_runtimes.empty())
-		return false;
-
-	const auto runtime = _device->_runtimes.front();
-
-	if (!runtime->depth_buffer_before_clear)
-		return false;
-	if (!cleared && !runtime->extended_depth_buffer_detection)
-		return false;
-
-	assert(pDepthStencilView.ptr != 0);
-
-	// Retrieve texture from depth stencil
-	com_ptr<ID3D12Resource> texture;
-	{ const std::lock_guard<std::mutex> lock(_device->_device_global_mutex);
-		texture = _device->_depthstencil_resources_by_handle[pDepthStencilView.ptr];
-	}
-	if (texture == nullptr)
-		return false;
-
-	D3D12_HEAP_FLAGS heap_flags;
-	D3D12_HEAP_PROPERTIES heap_props;
-
-	if (FAILED(texture->GetHeapProperties(&heap_props, &heap_flags)))
-		return false;
-
-	D3D12_RESOURCE_DESC desc = texture->GetDesc();
-
-	// Check if aspect ratio is similar to the back buffer one
-	const float width_factor = float(runtime->frame_width()) / float(desc.Width);
-	const float height_factor = float(runtime->frame_height()) / float(desc.Height);
-	const float aspect_ratio = float(runtime->frame_width()) / float(runtime->frame_height());
-	const float texture_aspect_ratio = float(desc.Width) / float(desc.Height);
-
-	if (fabs(texture_aspect_ratio - aspect_ratio) > 0.1f || width_factor > 1.85f || height_factor > 1.85f || width_factor < 0.5f || height_factor < 0.5f)
-		return false; // No match, not a good fit
-
-	// In case the depth texture is retrieved, we make a copy of it and store it in an ordered map to use it later in the final rendering stage.
-	if ((runtime->cleared_depth_buffer_index == 0 && cleared) || (_device->_clear_DSV_iter <= runtime->cleared_depth_buffer_index))
-	{
-		// Select an appropriate destination texture
-		com_ptr<ID3D12Resource> depth_texture_save = runtime->select_depth_texture_save(desc, &heap_props);
-		if (depth_texture_save == nullptr)
-			return false;
-
-		// Copy the depth texture. This is necessary because the content of the depth texture is cleared.
-		// This way, we can retrieve this content in the final rendering stage
-		D3D12_RESOURCE_BARRIER transition = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION };
-		transition.Transition.pResource = depth_texture_save.get();
-		transition.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		transition.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-		transition.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-		this->ResourceBarrier(1, &transition);
-
-		this->CopyResource(depth_texture_save.get(), texture.get());
-
-		transition.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		transition.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-		this->ResourceBarrier(1, &transition);
-
-		// Store the saved texture in the ordered map.
-		_draw_call_tracker.track_depth_texture(runtime->depth_buffer_texture_format, _device->_clear_DSV_iter, texture.get(), depth_texture_save, cleared);
-	}
-	else
-	{
-		// Store a null depth texture in the ordered map in order to display it even if the user chose a previous cleared texture.
-		// This way the texture will still be visible in the depth buffer selection window and the user can choose it.
-		_draw_call_tracker.track_depth_texture(runtime->depth_buffer_texture_format, _device->_clear_DSV_iter, texture.get(), nullptr, cleared);
-	}
-
-	_device->_clear_DSV_iter++;
-
-	return true;
-}
-
-void D3D12GraphicsCommandList::track_active_rendertargets(const D3D12_CPU_DESCRIPTOR_HANDLE *pDepthStencilView)
-{
-	// Reset current depth stencil binding
-	_draw_call_tracker._current_depthstencil = nullptr;
-
-	if (pDepthStencilView == nullptr || pDepthStencilView->ptr == 0 || _device->_runtimes.empty())
-		return;
-
-	const auto runtime = _device->_runtimes.front();
-
-	com_ptr<ID3D12Resource> texture;
-	{ const std::lock_guard<std::mutex> lock(_device->_device_global_mutex);
-		texture = _device->_depthstencil_resources_by_handle[pDepthStencilView->ptr];
-	}
-	if (texture == nullptr)
-		return;
-
-	// Update current depth stencil binding
-	_draw_call_tracker._current_depthstencil = texture;
-
-	_draw_call_tracker.track_rendertargets(runtime->depth_buffer_texture_format, texture.get());
-
-	save_depth_texture(*pDepthStencilView, false);
-}
-void D3D12GraphicsCommandList::track_cleared_depthstencil(D3D12_CLEAR_FLAGS ClearFlags, D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView)
-{
-	if (DepthStencilView.ptr == 0 || _device->_runtimes.empty())
-		return;
-
-	const auto runtime = _device->_runtimes.front();
-
-	if (ClearFlags & D3D12_CLEAR_FLAG_DEPTH || (runtime->depth_buffer_more_copies && ClearFlags & D3D12_CLEAR_FLAG_STENCIL))
-		save_depth_texture(DepthStencilView, true);
-}
-#endif
 
 bool D3D12GraphicsCommandList::check_and_upgrade_interface(REFIID riid)
 {
@@ -186,25 +71,18 @@ HRESULT STDMETHODCALLTYPE D3D12GraphicsCommandList::QueryInterface(REFIID riid, 
 }
 ULONG   STDMETHODCALLTYPE D3D12GraphicsCommandList::AddRef()
 {
-	++_ref;
-
-	return _orig->AddRef();
+	_orig->AddRef();
+	return InterlockedIncrement(&_ref);
 }
 ULONG   STDMETHODCALLTYPE D3D12GraphicsCommandList::Release()
 {
-	--_ref;
-
-	// Decrease internal reference count and verify it against our own count
-	const ULONG ref = _orig->Release();
-	if (ref != 0 && _ref != 0)
+	const ULONG ref = InterlockedDecrement(&_ref);
+	const ULONG ref_orig = _orig->Release();
+	if (ref != 0)
 		return ref;
-	else if (ref != 0)
-		LOG(WARN) << "Reference count for ID3D12GraphicsCommandList" << _interface_version << " object " << this << " is inconsistent: " << ref << ", but expected 0.";
+	if (ref_orig != 0)
+		LOG(WARN) << "Reference count for ID3D12GraphicsCommandList" << _interface_version << " object " << this << " is inconsistent.";
 
-	assert(_ref <= 0);
-#if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Destroyed ID3D12GraphicsCommandList" << _interface_version << " object " << this << '.';
-#endif
 	delete this;
 
 	return 0;
@@ -243,7 +121,7 @@ HRESULT STDMETHODCALLTYPE D3D12GraphicsCommandList::Close()
 }
 HRESULT STDMETHODCALLTYPE D3D12GraphicsCommandList::Reset(ID3D12CommandAllocator *pAllocator, ID3D12PipelineState *pInitialState)
 {
-	_draw_call_tracker.reset();
+	_buffer_detection.reset();
 
 	return _orig->Reset(pAllocator, pInitialState);
 }
@@ -255,12 +133,12 @@ void STDMETHODCALLTYPE D3D12GraphicsCommandList::ClearState(ID3D12PipelineState 
 void STDMETHODCALLTYPE D3D12GraphicsCommandList::DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, UINT StartInstanceLocation)
 {
 	_orig->DrawInstanced(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
-	_draw_call_tracker.on_draw(VertexCountPerInstance * InstanceCount);
+	_buffer_detection.on_draw(VertexCountPerInstance * InstanceCount);
 }
 void STDMETHODCALLTYPE D3D12GraphicsCommandList::DrawIndexedInstanced(UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation, INT BaseVertexLocation, UINT StartInstanceLocation)
 {
 	_orig->DrawIndexedInstanced(IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
-	_draw_call_tracker.on_draw(IndexCountPerInstance * InstanceCount);
+	_buffer_detection.on_draw(IndexCountPerInstance * InstanceCount);
 }
 void STDMETHODCALLTYPE D3D12GraphicsCommandList::Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ)
 {
@@ -320,6 +198,9 @@ void STDMETHODCALLTYPE D3D12GraphicsCommandList::ExecuteBundle(ID3D12GraphicsCom
 
 	// Get original command list pointer from proxy object
 	const auto command_list_proxy = static_cast<D3D12GraphicsCommandList *>(pCommandList);
+
+	// Merge bundle command list trackers into the current one
+	_buffer_detection.merge(command_list_proxy->_buffer_detection);
 
 	_orig->ExecuteBundle(command_list_proxy->_orig);
 }
@@ -397,18 +278,16 @@ void STDMETHODCALLTYPE D3D12GraphicsCommandList::SOSetTargets(UINT StartSlot, UI
 }
 void STDMETHODCALLTYPE D3D12GraphicsCommandList::OMSetRenderTargets(UINT NumRenderTargetDescriptors, const D3D12_CPU_DESCRIPTOR_HANDLE *pRenderTargetDescriptors, BOOL RTsSingleHandleToDescriptorRange, D3D12_CPU_DESCRIPTOR_HANDLE const *pDepthStencilDescriptor)
 {
-#if RESHADE_DX12_CAPTURE_DEPTH_BUFFERS
-	track_active_rendertargets(pDepthStencilDescriptor);
+#if RESHADE_DEPTH
+	_buffer_detection.on_set_depthstencil(pDepthStencilDescriptor != nullptr ? *pDepthStencilDescriptor : D3D12_CPU_DESCRIPTOR_HANDLE { 0 });
 #endif
-
 	_orig->OMSetRenderTargets(NumRenderTargetDescriptors, pRenderTargetDescriptors, RTsSingleHandleToDescriptorRange, pDepthStencilDescriptor);
 }
 void STDMETHODCALLTYPE D3D12GraphicsCommandList::ClearDepthStencilView(D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView, D3D12_CLEAR_FLAGS ClearFlags, FLOAT Depth, UINT8 Stencil, UINT NumRects, const D3D12_RECT *pRects)
 {
-#if RESHADE_DX12_CAPTURE_DEPTH_BUFFERS
-	track_cleared_depthstencil(ClearFlags, DepthStencilView);
+#if RESHADE_DEPTH
+	_buffer_detection.on_clear_depthstencil(ClearFlags, DepthStencilView);
 #endif
-
 	_orig->ClearDepthStencilView(DepthStencilView, ClearFlags, Depth, Stencil, NumRects, pRects);
 }
 void STDMETHODCALLTYPE D3D12GraphicsCommandList::ClearRenderTargetView(D3D12_CPU_DESCRIPTOR_HANDLE RenderTargetView, const FLOAT ColorRGBA[4], UINT NumRects, const D3D12_RECT *pRects)
@@ -458,6 +337,7 @@ void STDMETHODCALLTYPE D3D12GraphicsCommandList::EndEvent()
 void STDMETHODCALLTYPE D3D12GraphicsCommandList::ExecuteIndirect(ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgumentBuffer, UINT64 ArgumentBufferOffset, ID3D12Resource *pCountBuffer, UINT64 CountBufferOffset)
 {
 	_orig->ExecuteIndirect(pCommandSignature, MaxCommandCount, pArgumentBuffer, ArgumentBufferOffset, pCountBuffer, CountBufferOffset);
+	_buffer_detection.on_draw(0);
 }
 
 void STDMETHODCALLTYPE D3D12GraphicsCommandList::AtomicCopyBufferUINT(ID3D12Resource *pDstBuffer, UINT64 DstOffset, ID3D12Resource *pSrcBuffer, UINT64 SrcOffset, UINT Dependencies, ID3D12Resource *const *ppDependentResources, const D3D12_SUBRESOURCE_RANGE_UINT64 *pDependentSubresourceRanges)

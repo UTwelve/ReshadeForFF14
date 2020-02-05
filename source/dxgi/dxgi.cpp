@@ -3,7 +3,7 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "hook_manager.hpp"
 #include "dxgi_device.hpp"
 #include "dxgi_swapchain.hpp"
@@ -37,9 +37,6 @@ static void dump_swapchain_desc(const DXGI_SWAP_CHAIN_DESC &desc)
 	LOG(INFO) << "  | SwapEffect                              | " << std::setw(39) << desc.SwapEffect << " |";
 	LOG(INFO) << "  | Flags                                   | " << std::setw(39) << std::hex << desc.Flags << std::dec << " |";
 	LOG(INFO) << "  +-----------------------------------------+-----------------------------------------+";
-
-	if (desc.SampleDesc.Count > 1)
-		LOG(WARN) << "> Multisampling is enabled. This is not compatible with depth buffer access, which was therefore disabled.";
 }
 static void dump_swapchain_desc(const DXGI_SWAP_CHAIN_DESC1 &desc)
 {
@@ -60,9 +57,6 @@ static void dump_swapchain_desc(const DXGI_SWAP_CHAIN_DESC1 &desc)
 	LOG(INFO) << "  | AlphaMode                               | " << std::setw(39) << desc.AlphaMode << " |";
 	LOG(INFO) << "  | Flags                                   | " << std::setw(39) << std::hex << desc.Flags << std::dec << " |";
 	LOG(INFO) << "  +-----------------------------------------+-----------------------------------------+";
-
-	if (desc.SampleDesc.Count > 1)
-		LOG(WARN) << "> Multisampling is enabled. This is not compatible with depth buffer access, which was therefore disabled.";
 }
 
 static unsigned int query_device(IUnknown *&device, com_ptr<IUnknown> &device_proxy)
@@ -99,31 +93,27 @@ static void init_reshade_runtime_d3d(T *&swapchain, unsigned int direct3d_versio
 
 	if ((desc.BufferUsage & DXGI_USAGE_RENDER_TARGET_OUTPUT) == 0)
 	{
-		LOG(WARN) << "> Skipping swap chain due to missing 'DXGI_USAGE_RENDER_TARGET_OUTPUT' flag.";
+		LOG(WARN) << "Skipping swap chain due to missing 'DXGI_USAGE_RENDER_TARGET_OUTPUT' flag.";
 	}
 	else if (direct3d_version == 10)
 	{
 		const com_ptr<D3D10Device> &device = reinterpret_cast<const com_ptr<D3D10Device> &>(device_proxy);
 
-		const auto runtime = std::make_shared<reshade::d3d10::runtime_d3d10>(device->_orig, swapchain);
+		auto runtime = std::make_unique<reshade::d3d10::runtime_d3d10>(device->_orig, swapchain);
 		if (!runtime->on_init(desc))
 			LOG(ERROR) << "Failed to initialize Direct3D 10 runtime environment on runtime " << runtime.get() << '.';
 
-		device->_runtimes.push_back(runtime);
-
-		swapchain = new DXGISwapChain(device.get(), swapchain, runtime); // Overwrite returned swapchain pointer with hooked object
+		swapchain = new DXGISwapChain(device.get(), swapchain, std::move(runtime)); // Overwrite returned swapchain pointer with hooked object
 	}
 	else if (direct3d_version == 11)
 	{
 		const com_ptr<D3D11Device> &device = reinterpret_cast<const com_ptr<D3D11Device> &>(device_proxy);
 
-		const auto runtime = std::make_shared<reshade::d3d11::runtime_d3d11>(device->_orig, swapchain);
+		auto runtime = std::make_unique<reshade::d3d11::runtime_d3d11>(device->_orig, swapchain);
 		if (!runtime->on_init(desc))
 			LOG(ERROR) << "Failed to initialize Direct3D 11 runtime environment on runtime " << runtime.get() << '.';
 
-		device->_runtimes.push_back(runtime);
-
-		swapchain = new DXGISwapChain(device.get(), swapchain, runtime);
+		swapchain = new DXGISwapChain(device.get(), swapchain, std::move(runtime));
 	}
 	else if (direct3d_version == 12)
 	{
@@ -135,39 +125,35 @@ static void init_reshade_runtime_d3d(T *&swapchain, unsigned int direct3d_versio
 			if (hwnd != nullptr)
 				desc.OutputWindow = hwnd;
 
-			const auto runtime = std::make_shared<reshade::d3d12::runtime_d3d12>(command_queue->_device->_orig, command_queue->_orig, swapchain3.get());
+			auto runtime = std::make_unique<reshade::d3d12::runtime_d3d12>(command_queue->_device->_orig, command_queue->_orig, swapchain3.get());
 			if (!runtime->on_init(desc))
 				LOG(ERROR) << "Failed to initialize Direct3D 12 runtime environment on runtime " << runtime.get() << '.';
 
-			command_queue->_device->_runtimes.push_back(runtime);
-
-			swapchain = new DXGISwapChain(command_queue->_device, swapchain3.get(), runtime);
+			swapchain = new DXGISwapChain(command_queue->_device, swapchain3.get(), std::move(runtime));
 		}
 		else
 		{
-			LOG(WARN) << "> Skipping swap chain because it is missing support for the IDXGISwapChain3 interface.";
+			LOG(WARN) << "Skipping swap chain because it is missing support for the IDXGISwapChain3 interface.";
 		}
 	}
 	else
 	{
-		LOG(WARN) << "> Skipping swap chain because it was created without a (hooked) Direct3D device.";
+		LOG(WARN) << "Skipping swap chain because it was created without a (hooked) Direct3D device.";
 	}
 
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Returning IDXGISwapChain object " << swapchain << '.';
+	LOG(INFO) << "Returning IDXGISwapChain object " << swapchain << '.';
 #endif
-}
-
-reshade::log::message &operator<<(reshade::log::message &m, REFIID riid)
-{
-	OLECHAR riid_string[40];
-	StringFromGUID2(riid, riid_string, ARRAYSIZE(riid_string));
-	return m << riid_string;
 }
 
 HRESULT STDMETHODCALLTYPE IDXGIFactory_CreateSwapChain(IDXGIFactory *pFactory, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain)
 {
-	LOG(INFO) << "Redirecting IDXGIFactory::CreateSwapChain" << '(' << pFactory << ", " << pDevice << ", " << pDesc << ", " << ppSwapChain << ')' << " ...";
+	LOG(INFO) << "Redirecting IDXGIFactory::CreateSwapChain" << '('
+		<<   "this = " << pFactory
+		<< ", pDevice = " << pDevice
+		<< ", pDesc = " << pDesc
+		<< ", ppSwapChain = " << ppSwapChain
+		<< ')' << " ...";
 
 	if (pDevice == nullptr || pDesc == nullptr || ppSwapChain == nullptr)
 		return DXGI_ERROR_INVALID_CALL;
@@ -179,10 +165,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory_CreateSwapChain(IDXGIFactory *pFactory, I
 		query_device(pDevice, device_proxy);
 
 	const HRESULT hr = reshade::hooks::call(IDXGIFactory_CreateSwapChain, vtable_from_instance(pFactory) + 10)(pFactory, pDevice, pDesc, ppSwapChain);
-
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> IDXGIFactory::CreateSwapChain failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "IDXGIFactory::CreateSwapChain failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -193,7 +178,15 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory_CreateSwapChain(IDXGIFactory *pFactory, I
 
 HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2 *pFactory, IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain)
 {
-	LOG(INFO) << "Redirecting IDXGIFactory2::CreateSwapChainForHwnd" << '(' << pFactory << ", " << pDevice << ", " << hWnd << ", " << pDesc << ", " << pFullscreenDesc << ", " << pRestrictToOutput << ", " << ppSwapChain << ')' << " ...";
+	LOG(INFO) << "Redirecting IDXGIFactory2::CreateSwapChainForHwnd" << '('
+		<<   "this = " << pFactory
+		<< ", pDevice = " << pDevice
+		<< ", hWnd = " << hWnd
+		<< ", pDesc = " << pDesc
+		<< ", pFullscreenDesc = " << pFullscreenDesc
+		<< ", pRestrictToOutput = " << pRestrictToOutput
+		<< ", ppSwapChain = " << ppSwapChain
+		<< ')' << " ...";
 
 	if (pDevice == nullptr || pDesc == nullptr || ppSwapChain == nullptr)
 		return DXGI_ERROR_INVALID_CALL;
@@ -205,10 +198,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2 *pF
 		query_device(pDevice, device_proxy);
 
 	const HRESULT hr = reshade::hooks::call(IDXGIFactory2_CreateSwapChainForHwnd, vtable_from_instance(pFactory) + 15)(pFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
-
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> IDXGIFactory2::CreateSwapChainForHwnd failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "IDXGIFactory2::CreateSwapChainForHwnd failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -218,7 +210,14 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd(IDXGIFactory2 *pF
 }
 HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForCoreWindow(IDXGIFactory2 *pFactory, IUnknown *pDevice, IUnknown *pWindow, const DXGI_SWAP_CHAIN_DESC1 *pDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain)
 {
-	LOG(INFO) << "Redirecting IDXGIFactory2::CreateSwapChainForCoreWindow" << '(' << pFactory << ", " << pDevice << ", " << pWindow << ", " << pDesc << ", " << pRestrictToOutput << ", " << ppSwapChain << ')' << " ...";
+	LOG(INFO) << "Redirecting IDXGIFactory2::CreateSwapChainForCoreWindow" << '('
+		<<   "this = " << pFactory
+		<< ", pDevice = " << pDevice
+		<< ", pWindow = " << pWindow
+		<< ", pDesc = " << pDesc
+		<< ", pRestrictToOutput = " << pRestrictToOutput
+		<< ", ppSwapChain = " << ppSwapChain
+		<< ')' << " ...";
 
 	if (pDevice == nullptr || pDesc == nullptr || ppSwapChain == nullptr)
 		return DXGI_ERROR_INVALID_CALL;
@@ -230,10 +229,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForCoreWindow(IDXGIFactor
 		query_device(pDevice, device_proxy);
 
 	const HRESULT hr = reshade::hooks::call(IDXGIFactory2_CreateSwapChainForCoreWindow, vtable_from_instance(pFactory) + 16)(pFactory, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
-
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> IDXGIFactory2::CreateSwapChainForCoreWindow failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "IDXGIFactory2::CreateSwapChainForCoreWindow failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -248,7 +246,13 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForCoreWindow(IDXGIFactor
 }
 HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForComposition(IDXGIFactory2 *pFactory, IUnknown *pDevice, const DXGI_SWAP_CHAIN_DESC1 *pDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain)
 {
-	LOG(INFO) << "Redirecting IDXGIFactory2::CreateSwapChainForComposition" << '(' << pFactory << ", " << pDevice << ", " << pDesc << ", " << pRestrictToOutput << ", " << ppSwapChain << ')' << " ...";
+	LOG(INFO) << "Redirecting IDXGIFactory2::CreateSwapChainForComposition" << '('
+		<<   "this = " << pFactory
+		<< ", pDevice = " << pDevice
+		<< ", pDesc = " << pDesc
+		<< ", pRestrictToOutput = " << pRestrictToOutput
+		<< ", ppSwapChain = " << ppSwapChain
+		<< ')' << " ...";
 
 	if (pDevice == nullptr || pDesc == nullptr || ppSwapChain == nullptr)
 		return DXGI_ERROR_INVALID_CALL;
@@ -260,10 +264,9 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForComposition(IDXGIFacto
 		query_device(pDevice, device_proxy);
 
 	const HRESULT hr = reshade::hooks::call(IDXGIFactory2_CreateSwapChainForComposition, vtable_from_instance(pFactory) + 24)(pFactory, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
-
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> IDXGIFactory2::CreateSwapChainForComposition failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "IDXGIFactory2::CreateSwapChainForComposition failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -274,7 +277,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForComposition(IDXGIFacto
 
 HOOK_EXPORT HRESULT WINAPI CreateDXGIFactory(REFIID riid, void **ppFactory)
 {
-	LOG(INFO) << "Redirecting CreateDXGIFactory" << '(' << riid << ", " << ppFactory << ')' << " ...";
+	LOG(INFO) << "Redirecting CreateDXGIFactory" << '(' << "riid = " << riid << ", ppFactory = " << ppFactory << ')' << " ...";
 	LOG(INFO) << "> Passing on to CreateDXGIFactory1:";
 
 	// DXGI1.1 should always be available, so to simplify code just 'CreateDXGIFactory' which is otherwise identical
@@ -282,13 +285,12 @@ HOOK_EXPORT HRESULT WINAPI CreateDXGIFactory(REFIID riid, void **ppFactory)
 }
 HOOK_EXPORT HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory)
 {
-	LOG(INFO) << "Redirecting CreateDXGIFactory1" << '(' << riid << ", " << ppFactory << ')' << " ...";
+	LOG(INFO) << "Redirecting CreateDXGIFactory1" << '(' << "riid = " << riid << ", ppFactory = " << ppFactory << ')' << " ...";
 
 	const HRESULT hr = reshade::hooks::call(CreateDXGIFactory1)(riid, ppFactory);
-
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> CreateDXGIFactory1 failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "CreateDXGIFactory1 failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -305,13 +307,13 @@ HOOK_EXPORT HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory)
 	}
 
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Returning IDXGIFactory1 object " << *ppFactory << '.';
+	LOG(INFO) << "Returning IDXGIFactory1 object " << *ppFactory << '.';
 #endif
 	return hr;
 }
-HOOK_EXPORT HRESULT WINAPI CreateDXGIFactory2(UINT flags, REFIID riid, void **ppFactory)
+HOOK_EXPORT HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory)
 {
-	LOG(INFO) << "Redirecting CreateDXGIFactory2" << '(' << flags << ", " << riid << ", " << ppFactory << ')' << " ...";
+	LOG(INFO) << "Redirecting CreateDXGIFactory2" << '(' << "Flags = " << Flags << ", riid = " << riid << ", ppFactory = " << ppFactory << ')' << " ...";
 
 	static const auto trampoline = reshade::hooks::call(CreateDXGIFactory2);
 
@@ -324,11 +326,10 @@ HOOK_EXPORT HRESULT WINAPI CreateDXGIFactory2(UINT flags, REFIID riid, void **pp
 		return CreateDXGIFactory1(riid, ppFactory);
 	}
 
-	const HRESULT hr = trampoline(flags, riid, ppFactory);
-
+	const HRESULT hr = trampoline(Flags, riid, ppFactory);
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> CreateDXGIFactory2 failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "CreateDXGIFactory2 failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -341,7 +342,7 @@ HOOK_EXPORT HRESULT WINAPI CreateDXGIFactory2(UINT flags, REFIID riid, void **pp
 	reshade::hooks::install("IDXGIFactory2::CreateSwapChainForComposition", vtable_from_instance(factory), 24, reinterpret_cast<reshade::hook::address>(&IDXGIFactory2_CreateSwapChainForComposition));
 
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Returning IDXGIFactory2 object " << *ppFactory << '.';
+	LOG(INFO) << "Returning IDXGIFactory2 object " << *ppFactory << '.';
 #endif
 	return hr;
 }

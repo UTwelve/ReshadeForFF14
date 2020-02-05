@@ -5,16 +5,16 @@
 
 #pragma once
 
-#include "effect_lexer.hpp"
-#include <algorithm>
-#include <memory>
+#include "effect_module.hpp"
+#include <memory> // std::unique_ptr
+#include <algorithm> // std::find_if
 
 namespace reshadefx
 {
 	/// <summary>
 	/// A SSA code generation back-end interface for the parser to call into.
 	/// </summary>
-	class codegen abstract
+	class codegen
 	{
 	public:
 		/// <summary>
@@ -321,5 +321,6 @@ namespace reshadefx
 	/// <param name="vulkan_semantics">Generate SPIR-V for OpenGL or for Vulkan.</param>
 	/// <param name="debug_info">Whether to append debug information like line directives to the generated code.</param>
 	/// <param name="uniforms_to_spec_constants">Whether to convert uniform variables to specialization constants.</param>
-	codegen *create_codegen_spirv(bool vulkan_semantics, bool debug_info, bool uniforms_to_spec_constants);
+	/// <param name="invert_y">Insert code to invert the Y component of the output position in vertex shaders.</param>
+	codegen *create_codegen_spirv(bool vulkan_semantics, bool debug_info, bool uniforms_to_spec_constants, bool invert_y = false);
 }

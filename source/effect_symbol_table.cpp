@@ -3,11 +3,9 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "effect_parser.hpp"
 #include "effect_symbol_table.hpp"
-#include <assert.h>
-#include <algorithm>
-#include <functional>
+#include <cassert>
+#include <algorithm> // std::upper_bound, std::sort
 
 #pragma region Import intrinsic functions
 
@@ -119,11 +117,11 @@ unsigned int reshadefx::type::rank(const type &src, const type &dst)
 
 	const int rank = ranks[src.base - 1][dst.base - 1] << 2;
 
-	if (src.is_scalar() && dst.is_vector())
+	if ((src.is_scalar() && dst.is_vector()))
 		return rank >> 1; // Scalar to vector promotion has a lower rank
-	if (src.is_vector() && dst.is_scalar() || (src.is_vector() == dst.is_vector() && src.rows > dst.rows && src.cols >= dst.cols))
+	if ((src.is_vector() && dst.is_scalar()) || (src.is_vector() == dst.is_vector() && src.rows > dst.rows && src.cols >= dst.cols))
 		return rank >> 2; // Vector to scalar conversion has an even lower rank
-	if (src.is_vector() != dst.is_vector() || src.is_matrix() != dst.is_matrix() || src.components() != dst.components())
+	if ((src.is_vector() != dst.is_vector()) || src.is_matrix() != dst.is_matrix() || src.components() != dst.components())
 		return 0; // If components weren't converted at this point, the types are not compatible
 
 	return rank * src.components(); // More components causes a higher rank
@@ -318,9 +316,10 @@ bool reshadefx::symbol_table::resolve_function_call(const std::string &name, con
 	{
 		for (auto it = stack_it->second.rbegin(), end = stack_it->second.rend(); it != end; ++it)
 		{
+			if (it->op != symbol_type::function)
+				continue;
 			if (it->scope.level > scope.level ||
-				it->scope.namespace_level > scope.namespace_level ||
-				it->op != symbol_type::function)
+				it->scope.namespace_level > scope.namespace_level || (it->scope.namespace_level == scope.namespace_level && it->scope.name != scope.name))
 				continue;
 
 			const function_info *const function = it->function;

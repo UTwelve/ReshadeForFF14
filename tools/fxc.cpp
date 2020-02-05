@@ -7,7 +7,8 @@
 #include "effect_codegen.hpp"
 #include "effect_preprocessor.hpp"
 #include "version.h"
-#include <vector>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 
@@ -32,6 +33,8 @@ Options:
 
   --width                   Value of the 'BUFFER_WIDTH' preprocessor macro.
   --height                  Value of the 'BUFFER_HEIGHT' preprocessor macro.
+  --invert-y                Insert code to invert the Y component of the output position in vertex shaders (only applies to SPIR-V).
+  --spec-constants          Convert uniform variables to specialization constants.
 
   -Zi                       Enable debug information.
 	)", path);
@@ -48,6 +51,8 @@ int main(int argc, char *argv[])
 	bool print_glsl = false;
 	bool print_hlsl = false;
 	bool debug_info = false;
+	bool invert_y_axis = false;
+	bool spec_constants = false;
 	unsigned int shader_model = 50;
 
 	reshadefx::parser parser;
@@ -60,52 +65,56 @@ int main(int argc, char *argv[])
 	{
 		if (const char *arg = argv[i]; arg[0] == '-')
 		{
-			if (0 == strcmp(arg, "-h") || 0 == strcmp(arg, "--help"))
+			if (0 == std::strcmp(arg, "-h") || 0 == std::strcmp(arg, "--help"))
 			{
 				print_usage(argv[0]);
 				return 0;
 			}
-			if (0 == strcmp(arg, "--version"))
+			if (0 == std::strcmp(arg, "--version"))
 			{
 				printf("%s\n", VERSION_STRING_PRODUCT);
 				return 0;
 			}
 
-			if (0 == strcmp(arg, "-D"))
+			if (0 == std::strcmp(arg, "-D"))
 			{
 				char *macro = argv[++i];
-				char *value = strchr(macro, '=');
+				char *value = std::strchr(macro, '=');
 				if (value) *value++ = '\0';
 				pp.add_macro_definition(macro, value ? value : "1");
 				continue;
 			}
 
-			if (0 == strcmp(arg, "-I"))
+			if (0 == std::strcmp(arg, "-I"))
 			{
 				pp.add_include_path(argv[++i]);
 				continue;
 			}
 
-			if (0 == strcmp(arg, "-Zi"))
+			if (0 == std::strcmp(arg, "-Zi"))
 				debug_info = true;
-			else if (0 == strcmp(arg, "--glsl"))
+			else if (0 == std::strcmp(arg, "--glsl"))
 				print_glsl = true;
-			else if (0 == strcmp(arg, "--hlsl"))
+			else if (0 == std::strcmp(arg, "--hlsl"))
 				print_hlsl = true;
+			else if (0 == std::strcmp(arg, "--invert-y"))
+				invert_y_axis = true;
+			else if (0 == std::strcmp(arg, "--spec-constants"))
+				spec_constants = true;
 
 			if (i + 1 >= argc)
-				break;
-			else if (0 == strcmp(arg, "-P"))
+				continue;
+			else if (0 == std::strcmp(arg, "-P"))
 				preprocess = argv[++i];
-			else if (0 == strcmp(arg, "-Fe"))
+			else if (0 == std::strcmp(arg, "-Fe"))
 				errorfile = argv[++i];
-			else if (0 == strcmp(arg, "-Fo"))
+			else if (0 == std::strcmp(arg, "-Fo"))
 				objectfile = argv[++i];
-			else if (0 == strcmp(arg, "--shader-model"))
+			else if (0 == std::strcmp(arg, "--shader-model"))
 				shader_model = std::strtol(argv[++i], nullptr, 10);
-			else if (0 == strcmp(arg, "--width"))
+			else if (0 == std::strcmp(arg, "--width"))
 				buffer_width = argv[++i];
-			else if (0 == strcmp(arg, "--height"))
+			else if (0 == std::strcmp(arg, "--height"))
 				buffer_height = argv[++i];
 		}
 		else
@@ -142,7 +151,7 @@ int main(int argc, char *argv[])
 
 	if (preprocess != nullptr)
 	{
-		if (strcmp(preprocess, "-") == 0)
+		if (std::strcmp(preprocess, "-") == 0)
 			std::cout << pp.output() << std::endl;
 		else
 			std::ofstream(preprocess) << pp.output();
@@ -151,11 +160,11 @@ int main(int argc, char *argv[])
 
 	std::unique_ptr<reshadefx::codegen> backend;
 	if (print_glsl)
-		backend.reset(reshadefx::create_codegen_glsl(debug_info, false));
+		backend.reset(reshadefx::create_codegen_glsl(debug_info, spec_constants));
 	else if (print_hlsl)
-		backend.reset(reshadefx::create_codegen_hlsl(shader_model, debug_info, false));
+		backend.reset(reshadefx::create_codegen_hlsl(shader_model, debug_info, spec_constants));
 	else
-		backend.reset(reshadefx::create_codegen_spirv(true, debug_info, false));
+		backend.reset(reshadefx::create_codegen_spirv(true, debug_info, spec_constants, invert_y_axis));
 
 	if (!parser.parse(pp.output(), backend.get()))
 	{

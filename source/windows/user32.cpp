@@ -3,10 +3,9 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "hook_manager.hpp"
-#include "input.hpp"
-#include <assert.h>
+#include <cassert>
 #include <Windows.h>
 
 HOOK_EXPORT ATOM WINAPI HookRegisterClassA(const WNDCLASSA *lpWndClass)
@@ -17,7 +16,7 @@ HOOK_EXPORT ATOM WINAPI HookRegisterClassA(const WNDCLASSA *lpWndClass)
 
 	if (wndclass.hInstance == GetModuleHandle(nullptr))
 	{
-		LOG(INFO) << "Redirecting RegisterClassA" << '(' << lpWndClass << " { " << wndclass.lpszClassName << " }" << ')' << " ...";
+		LOG(INFO) << "Redirecting RegisterClassA" << '(' << "lpWndClass = " << lpWndClass << " { " << wndclass.lpszClassName << " }" << ')' << " ...";
 
 		if ((wndclass.style & CS_OWNDC) == 0)
 		{
@@ -37,7 +36,7 @@ HOOK_EXPORT ATOM WINAPI HookRegisterClassW(const WNDCLASSW *lpWndClass)
 
 	if (wndclass.hInstance == GetModuleHandle(nullptr))
 	{
-		LOG(INFO) << "Redirecting RegisterClassW" << '(' << lpWndClass << " { " << wndclass.lpszClassName << " }" << ')' << " ...";
+		LOG(INFO) << "Redirecting RegisterClassW" << '(' << "lpWndClass = " << lpWndClass << " { " << wndclass.lpszClassName << " }" << ')' << " ...";
 
 		if ((wndclass.style & CS_OWNDC) == 0)
 		{
@@ -57,7 +56,7 @@ HOOK_EXPORT ATOM WINAPI HookRegisterClassExA(const WNDCLASSEXA *lpWndClassEx)
 
 	if (wndclass.hInstance == GetModuleHandle(nullptr))
 	{
-		LOG(INFO) << "Redirecting RegisterClassExA" << '(' << lpWndClassEx << " { " << wndclass.lpszClassName << " }" << ')' << " ...";
+		LOG(INFO) << "Redirecting RegisterClassExA" << '(' << "lpWndClassEx = " << lpWndClassEx << " { " << wndclass.lpszClassName << " }" << ')' << " ...";
 
 		if ((wndclass.style & CS_OWNDC) == 0)
 		{
@@ -77,7 +76,7 @@ HOOK_EXPORT ATOM WINAPI HookRegisterClassExW(const WNDCLASSEXW *lpWndClassEx)
 
 	if (wndclass.hInstance == GetModuleHandle(nullptr))
 	{
-		LOG(INFO) << "Redirecting RegisterClassExW" << '(' << lpWndClassEx << " { " << wndclass.lpszClassName << " }" << ')' << " ...";
+		LOG(INFO) << "Redirecting RegisterClassExW" << '(' << "lpWndClassEx = " << lpWndClassEx << " { " << wndclass.lpszClassName << " }" << ')' << " ...";
 
 		if ((wndclass.style & CS_OWNDC) == 0)
 		{

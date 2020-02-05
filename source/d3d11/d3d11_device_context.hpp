@@ -6,7 +6,7 @@
 #pragma once
 
 #include <d3d11_4.h>
-#include "draw_call_tracker.hpp"
+#include "buffer_detection.hpp"
 
 struct DECLSPEC_UUID("27B0246B-2152-4D42-AD11-32489472238F") D3D11DeviceContext : ID3D11DeviceContext4
 {
@@ -181,18 +181,11 @@ struct DECLSPEC_UUID("27B0246B-2152-4D42-AD11-32489472238F") D3D11DeviceContext 
 	HRESULT STDMETHODCALLTYPE Wait(ID3D11Fence *pFence, UINT64 Value) override;
 	#pragma endregion
 
-#if RESHADE_DX11_CAPTURE_DEPTH_BUFFERS
-	bool save_depth_texture(ID3D11DepthStencilView *pDepthStencilView, bool cleared);
-
-	void track_active_rendertargets(UINT NumViews, ID3D11RenderTargetView *const *ppRenderTargetViews, ID3D11DepthStencilView *pDepthStencilView);
-	void track_cleared_depthstencil(UINT ClearFlags, ID3D11DepthStencilView *pDepthStencilView);
-#endif
-
 	bool check_and_upgrade_interface(REFIID riid);
 
 	LONG _ref = 1;
 	ID3D11DeviceContext *_orig;
 	unsigned int _interface_version;
 	D3D11Device *const _device;
-	reshade::d3d11::draw_call_tracker _draw_call_tracker;
+	reshade::d3d11::buffer_detection_context _buffer_detection;
 };

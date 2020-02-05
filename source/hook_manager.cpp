@@ -3,10 +3,11 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "hook_manager.hpp"
-#include <assert.h>
 #include <mutex>
+#include <cassert>
+#include <cstring>
 #include <algorithm>
 #include <tuple>
 #include <vector>
@@ -28,6 +29,7 @@ struct module_export
 };
 
 extern HMODULE g_module_handle;
+static HMODULE s_export_module_handle = nullptr;
 extern std::filesystem::path g_reshade_dll_path;
 static std::filesystem::path s_export_hook_path;
 static std::vector<std::filesystem::path> s_delayed_hook_paths;
@@ -35,7 +37,7 @@ static std::vector<std::tuple<const char *, reshade::hook, hook_method>> s_hooks
 static std::mutex s_mutex_hooks;
 static std::mutex s_mutex_delayed_hook_paths;
 
-std::vector<module_export> get_module_exports(HMODULE handle)
+std::vector<module_export> enumerate_module_exports(HMODULE handle)
 {
 	const auto image_base = reinterpret_cast<const BYTE *>(handle);
 	const auto image_header = reinterpret_cast<const IMAGE_NT_HEADERS *>(image_base +
@@ -43,14 +45,14 @@ std::vector<module_export> get_module_exports(HMODULE handle)
 
 	if (image_header->Signature != IMAGE_NT_SIGNATURE ||
 		image_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size == 0)
-		return {};
+		return {}; // The handle does not point to a valid module
 
 	const auto export_dir = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY *>(image_base +
 		image_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
 	const auto export_base = static_cast<WORD>(export_dir->Base);
 
 	if (export_dir->NumberOfFunctions == 0)
-		return {};
+		return {}; // This module does not contain any exported functions
 
 	std::vector<module_export> exports;
 	exports.reserve(export_dir->NumberOfNames);
@@ -88,9 +90,11 @@ static bool install_internal(const char *name, reshade::hook &hook, hook_method 
 		status = hook.install();
 		break;
 	case hook_method::vtable_hook:
+		// Make vtable memory writable before modifying it
 		if (DWORD protection = PAGE_READWRITE;
 			VirtualProtect(hook.target, sizeof(reshade::hook::address), protection, &protection))
 		{
+			// Replace entry in vtable with the replacement function
 			*reinterpret_cast<reshade::hook::address *>(hook.target) = hook.replacement;
 
 			VirtualProtect(hook.target, sizeof(reshade::hook::address), protection, &protection);
@@ -122,12 +126,11 @@ static bool install_internal(const char *name, reshade::hook &hook, hook_method 
 }
 static bool install_internal(HMODULE target_module, HMODULE replacement_module, hook_method method)
 {
-	assert(target_module != nullptr && replacement_module != nullptr);
-	assert(target_module != replacement_module);
+	assert(target_module != nullptr && replacement_module != nullptr && target_module != replacement_module);
 
 	// Load export tables
-	const auto target_exports = get_module_exports(target_module);
-	const auto replacement_exports = get_module_exports(replacement_module);
+	const auto target_exports = enumerate_module_exports(target_module);
+	const auto replacement_exports = enumerate_module_exports(replacement_module);
 
 	if (target_exports.empty())
 	{
@@ -154,8 +157,8 @@ static bool install_internal(HMODULE target_module, HMODULE replacement_module, 
 
 		// Find appropriate replacement
 		const auto it = std::find_if(replacement_exports.cbegin(), replacement_exports.cend(),
-			[&symbol](const auto &moduleexport) {
-				return std::strcmp(moduleexport.name, symbol.name) == 0;
+			[&symbol](const auto &module_export) {
+				return std::strcmp(module_export.name, symbol.name) == 0;
 			});
 
 		// Filter out uninteresting functions
@@ -179,7 +182,12 @@ static bool install_internal(HMODULE target_module, HMODULE replacement_module, 
 	for (const auto &match : matches)
 	{
 		reshade::hook hook;
+#ifdef RESHADE_TEST_APPLICATION
+		// RenderDoc hooks the IAT, so get an updated function pointer via its GetProcAddress hook
+		hook.target = GetProcAddress(target_module, std::get<0>(match));
+#else
 		hook.target = std::get<1>(match);
+#endif
 		hook.trampoline = hook.target;
 		hook.replacement = std::get<2>(match);
 
@@ -213,9 +221,11 @@ static bool uninstall_internal(const char *name, reshade::hook &hook, hook_metho
 		status = hook.uninstall();
 		break;
 	case hook_method::vtable_hook:
+		// Make vtable memory writable before modifying it
 		if (DWORD protection = PAGE_READWRITE;
 			VirtualProtect(hook.target, sizeof(reshade::hook::address), protection, &protection))
 		{
+			// Replace entry in vtable with the original function
 			*reinterpret_cast<reshade::hook::address *>(hook.target) = hook.trampoline;
 
 			VirtualProtect(hook.target, sizeof(reshade::hook::address), protection, &protection);
@@ -272,9 +282,11 @@ static reshade::hook find_internal(reshade::hook::address target, reshade::hook:
 {
 	const std::lock_guard<std::mutex> lock(s_mutex_hooks);
 
+	// Enumerate list of installed hooks and find matching one
 	const auto it = std::find_if(s_hooks.cbegin(), s_hooks.cend(),
 		[target, replacement](const auto &hook) {
 			return std::get<1>(hook).replacement == replacement &&
+				// Optionally compare the target address too (do not do this if it is unknown)
 				(target == nullptr || std::get<1>(hook).target == target);
 		});
 
@@ -371,7 +383,7 @@ void reshade::hooks::uninstall()
 
 	hook::apply_queued_actions();
 
-	// Afterwards remove all hooks from the list
+	// Afterwards uninstall and remove all hooks from the list
 	for (auto &hook_info : s_hooks)
 		uninstall_internal(
 			std::get<0>(hook_info),
@@ -379,10 +391,16 @@ void reshade::hooks::uninstall()
 			std::get<2>(hook_info));
 
 	s_hooks.clear();
+
+	// Free reference to the module loaded for export hooks (this is necessary for Alan Wake to work)
+	if (s_export_module_handle)
+		FreeLibrary(s_export_module_handle);
+	s_export_module_handle = nullptr;
 }
 
 void reshade::hooks::register_module(const std::filesystem::path &target_path)
 {
+#ifndef RESHADE_TEST_APPLICATION
 	install("LoadLibraryA", reinterpret_cast<hook::address>(&LoadLibraryA), reinterpret_cast<hook::address>(&HookLoadLibraryA), true);
 	install("LoadLibraryExA", reinterpret_cast<hook::address>(&LoadLibraryExA), reinterpret_cast<hook::address>(&HookLoadLibraryExA), true);
 	install("LoadLibraryW", reinterpret_cast<hook::address>(&LoadLibraryW), reinterpret_cast<hook::address>(&HookLoadLibraryW), true);
@@ -390,6 +408,7 @@ void reshade::hooks::register_module(const std::filesystem::path &target_path)
 
 	// Install all "LoadLibrary" hooks in one go immediately
 	hook::apply_queued_actions();
+#endif
 
 	LOG(INFO) << "Registering hooks for " << target_path << " ...";
 
@@ -431,10 +450,10 @@ reshade::hook::address reshade::hooks::call(hook::address target, hook::address 
 	{
 		return hook.call();
 	}
-	else if (!s_export_hook_path.empty()) // If the hook does not exist yet, delay-load export hooks and try again
+	else if (!s_export_module_handle) // If the hook does not exist yet, delay-load export hooks and try again
 	{
 		// Note: Could use LoadLibraryExW with LOAD_LIBRARY_SEARCH_SYSTEM32 here, but absolute paths should do the trick as well
-		const HMODULE handle = LoadLibraryW(s_export_hook_path.wstring().c_str());
+		const HMODULE handle = LoadLibraryW(s_export_hook_path.c_str());
 
 		LOG(INFO) << "Installing export hooks for " << s_export_hook_path << " ...";
 
@@ -445,6 +464,7 @@ reshade::hook::address reshade::hooks::call(hook::address target, hook::address 
 			install_internal(handle, g_module_handle, hook_method::export_hook);
 
 			s_export_hook_path.clear();
+			s_export_module_handle = handle;
 
 			return call(replacement);
 		}

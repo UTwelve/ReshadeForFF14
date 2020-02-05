@@ -3,11 +3,9 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "hook_manager.hpp"
 #include "d3d12_device.hpp"
-
-extern reshade::log::message &operator<<(reshade::log::message &m, REFIID riid);
 
 HOOK_EXPORT HRESULT WINAPI D3D12CreateDevice(
 	IUnknown *pAdapter,
@@ -15,12 +13,12 @@ HOOK_EXPORT HRESULT WINAPI D3D12CreateDevice(
 	REFIID riid,
 	void **ppDevice)
 {
-	LOG(INFO) << "Redirecting D3D12CreateDevice" << '(' << pAdapter << ", " << std::hex << MinimumFeatureLevel << std::dec << ", " << riid << ", " << ppDevice << ')' << " ...";
+	LOG(INFO) << "Redirecting D3D12CreateDevice" << '(' << "pAdapter = " << pAdapter << ", MinimumFeatureLevel = " << std::hex << MinimumFeatureLevel << std::dec << ", riid = " << riid << ", ppDevice = " << ppDevice << ')' << " ...";
 
 	const HRESULT hr = reshade::hooks::call(D3D12CreateDevice)(pAdapter, MinimumFeatureLevel, riid, ppDevice);
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> D3D12CreateDevice failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "D3D12CreateDevice failed with error code " << std::hex << hr << std::dec << '!';
 		return hr;
 	}
 
@@ -37,7 +35,7 @@ HOOK_EXPORT HRESULT WINAPI D3D12CreateDevice(
 		delete device_proxy;
 
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Returning ID3D12Device" << device_proxy->_interface_version << " object " << device_proxy << '.';
+	LOG(INFO) << "Returning ID3D12Device" << device_proxy->_interface_version << " object " << device_proxy << '.';
 #endif
 	return hr;
 }

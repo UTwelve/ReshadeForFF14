@@ -4,7 +4,7 @@
  */
 
 #include "effect_lexer.hpp"
-#include <unordered_map>
+#include <unordered_map> // Used for static lookup tables
 
 using namespace reshadefx;
 
@@ -337,19 +337,20 @@ static const std::unordered_map<std::string, tokenid> pp_directive_lookup = {
 	{ "include", tokenid::hash_include },
 };
 
-inline bool is_octal_digit(char c)
+static inline bool is_octal_digit(char c)
 {
 	return static_cast<unsigned>(c - '0') < 8;
 }
-inline bool is_decimal_digit(char c)
+static inline bool is_decimal_digit(char c)
 {
 	return static_cast<unsigned>(c - '0') < 10;
 }
-inline bool is_hexadecimal_digit(char c)
+static inline bool is_hexadecimal_digit(char c)
 {
 	return is_decimal_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
-bool is_digit(char c, int radix)
+
+static bool is_digit(char c, int radix)
 {
 	switch (radix)
 	{
@@ -363,7 +364,7 @@ bool is_digit(char c, int radix)
 
 	return false;
 }
-inline long long octal_to_decimal(long long n)
+static long long octal_to_decimal(long long n)
 {
 	long long m = 0;
 
@@ -387,8 +388,9 @@ inline long long octal_to_decimal(long long n)
 std::string reshadefx::token::id_to_name(tokenid id)
 {
 	const auto it = token_lookup.find(id);
-
-	return it != token_lookup.end() ? it->second : "unknown";
+	if (it != token_lookup.end())
+		return it->second;
+	return "unknown";
 }
 
 reshadefx::token reshadefx::lexer::lex()
@@ -690,11 +692,8 @@ void reshadefx::lexer::parse_identifier(token &tok) const
 		return;
 
 	const auto it = keyword_lookup.find(tok.literal_as_string);
-
 	if (it != keyword_lookup.end())
-	{
 		tok.id = it->second;
-	}
 }
 bool reshadefx::lexer::parse_pp_directive(token &tok)
 {
@@ -703,11 +702,9 @@ bool reshadefx::lexer::parse_pp_directive(token &tok)
 	parse_identifier(tok);
 
 	const auto it = pp_directive_lookup.find(tok.literal_as_string);
-
 	if (it != pp_directive_lookup.end())
 	{
 		tok.id = it->second;
-
 		return true;
 	}
 	else if (!_ignore_line_directives && tok.literal_as_string == "line") // The #line directive needs special handling
@@ -814,7 +811,7 @@ void reshadefx::lexer::parse_string_literal(token &tok, bool escape) const
 					while (is_hexadecimal_digit(*end) && end < _end)
 					{
 						c = *end++;
-						n = (n << 4) | (is_decimal_digit(c) ? c - '0' : c - 55 - 32 * (c & 0x20));
+						n = (n << 4) | (is_decimal_digit(c) ? (c - '0') : (c - 55 - 32 * (c & 0x20)));
 					}
 
 					// For simplicity the number is limited to what fits in a single character
@@ -896,21 +893,17 @@ void reshadefx::lexer::parse_numeric_literal(token &tok) const
 
 	// Ignore additional digits that cannot affect the value
 	while (is_digit(*end, radix))
-	{
 		end++;
-	}
 
 	// If a decimal character was found, this is a floating point value, otherwise an integer one
 	if (decimal_location < 0)
 	{
 		tok.id = tokenid::int_literal;
-
 		decimal_location = mantissa_size;
 	}
 	else
 	{
 		tok.id = tokenid::float_literal;
-
 		mantissa_size -= 1;
 	}
 
@@ -931,7 +924,7 @@ void reshadefx::lexer::parse_numeric_literal(token &tok) const
 
 			do {
 				exponent *= 10;
-				exponent += *end++ - '0';
+				exponent += (*end++) - '0';
 			} while (is_decimal_digit(*end));
 
 			if (negative)
@@ -943,19 +936,16 @@ void reshadefx::lexer::parse_numeric_literal(token &tok) const
 	if (*end == 'F' || *end == 'f')
 	{
 		end++; // Consume the suffix
-
 		tok.id = tokenid::float_literal;
 	}
 	else if (*end == 'L' || *end == 'l')
 	{
 		end++; // Consume the suffix
-
 		tok.id = tokenid::double_literal;
 	}
 	else if (tok.id == tokenid::int_literal && (*end == 'U' || *end == 'u')) // The 'u' suffix is only valid on integers and needs to be ignored otherwise
 	{
 		end++; // Consume the suffix
-
 		tok.id = tokenid::uint_literal;
 	}
 

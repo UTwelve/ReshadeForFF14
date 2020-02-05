@@ -3,7 +3,7 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "log.hpp"
+#include "dll_log.hpp"
 #include "hook_manager.hpp"
 #include "d3d9_device.hpp"
 #include "d3d9_swapchain.hpp"
@@ -34,9 +34,6 @@ void dump_present_parameters(const D3DPRESENT_PARAMETERS &pp)
 	LOG(INFO) << "  | FullScreen_RefreshRateInHz              | " << std::setw(39) << pp.FullScreen_RefreshRateInHz << " |";
 	LOG(INFO) << "  | PresentationInterval                    | " << std::setw(39) << std::hex << pp.PresentationInterval << std::dec << " |";
 	LOG(INFO) << "  +-----------------------------------------+-----------------------------------------+";
-
-	if (pp.MultiSampleType != D3DMULTISAMPLE_NONE)
-		LOG(WARN) << "> Multisampling is enabled. This is not compatible with depth buffer access, which was therefore disabled.";
 }
 
 template <typename T>
@@ -50,14 +47,14 @@ static void init_runtime_d3d(T *&device, D3DDEVTYPE device_type, D3DPRESENT_PARA
 	// TODO: Make this configurable, since it prevents ReShade from being applied to video players.
 	if (pp.Flags & D3DPRESENTFLAG_VIDEO)
 	{
-		LOG(WARN) << "> Skipping device because it uses a video swapchain.";
+		LOG(WARN) << "Skipping device because it uses a video swapchain.";
 		return;
 	}
 #endif
 
 	if (device_type == D3DDEVTYPE_NULLREF)
 	{
-		LOG(WARN) << "> Skipping device because the device type is 'D3DDEVTYPE_NULLREF'.";
+		LOG(WARN) << "Skipping device because the device type is 'D3DDEVTYPE_NULLREF'.";
 		return;
 	}
 
@@ -74,7 +71,7 @@ static void init_runtime_d3d(T *&device, D3DDEVTYPE device_type, D3DPRESENT_PARA
 
 	const auto device_proxy = new Direct3DDevice9(device, swapchain, runtime, use_software_rendering);
 
-	// Get and set depth stencil surface so that the depth detection callbacks are called with the auto depth stencil surface
+	// Get and set depth-stencil surface so that the depth detection callbacks are called with the auto depth-stencil surface
 	if (pp.EnableAutoDepthStencil)
 	{
 		device->GetDepthStencilSurface(&device_proxy->_auto_depthstencil);
@@ -89,13 +86,21 @@ static void init_runtime_d3d(T *&device, D3DDEVTYPE device_type, D3DPRESENT_PARA
 	device_proxy->QueryInterface(IID_PPV_ARGS(&deviceex));
 
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Returning IDirect3DDevice9" << (device_proxy->_extended_interface ? "Ex" : "") << " object " << device << '.';
+	LOG(INFO) << "Returning IDirect3DDevice9" << (device_proxy->_extended_interface ? "Ex" : "") << " object " << device << '.';
 #endif
 }
 
 HRESULT STDMETHODCALLTYPE IDirect3D9_CreateDevice(IDirect3D9 *pD3D, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DDevice9 **ppReturnedDeviceInterface)
 {
-	LOG(INFO) << "Redirecting IDirect3D9::CreateDevice" << '(' << pD3D << ", " << Adapter << ", " << DeviceType << ", " << hFocusWindow << ", " << std::hex << BehaviorFlags << std::dec << ", " << pPresentationParameters << ", " << ppReturnedDeviceInterface << ')' << " ...";
+	LOG(INFO) << "Redirecting IDirect3D9::CreateDevice" << '('
+		<<   "this = " << pD3D
+		<< ", pAdapter = " << Adapter
+		<< ", DeviceType = " << DeviceType
+		<< ", hFocusWindow = " << hFocusWindow
+		<< ", BehaviorFlags = " << std::hex << BehaviorFlags << std::dec
+		<< ", pPresentationParameters = " << pPresentationParameters
+		<< ", ppReturnedDeviceInterface = " << ppReturnedDeviceInterface
+		<< ')' << " ...";
 
 	if (pPresentationParameters == nullptr)
 		return D3DERR_INVALIDCALL;
@@ -111,15 +116,14 @@ HRESULT STDMETHODCALLTYPE IDirect3D9_CreateDevice(IDirect3D9 *pD3D, UINT Adapter
 	const bool use_software_rendering = (BehaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING) != 0;
 	if (use_software_rendering)
 	{
-		LOG(WARN) << "> Replacing 'D3DCREATE_SOFTWARE_VERTEXPROCESSING' flag with 'D3DCREATE_MIXED_VERTEXPROCESSING' to allow for hardware rendering ...";
+		LOG(INFO) << "> Replacing 'D3DCREATE_SOFTWARE_VERTEXPROCESSING' flag with 'D3DCREATE_MIXED_VERTEXPROCESSING' to allow for hardware rendering ...";
 		BehaviorFlags = (BehaviorFlags & ~D3DCREATE_SOFTWARE_VERTEXPROCESSING) | D3DCREATE_MIXED_VERTEXPROCESSING;
 	}
 
 	const HRESULT hr = reshade::hooks::call(IDirect3D9_CreateDevice, vtable_from_instance(pD3D) + 16)(pD3D, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface);
-
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> IDirect3D9::CreateDevice failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "IDirect3D9::CreateDevice failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -130,7 +134,16 @@ HRESULT STDMETHODCALLTYPE IDirect3D9_CreateDevice(IDirect3D9 *pD3D, UINT Adapter
 
 HRESULT STDMETHODCALLTYPE IDirect3D9Ex_CreateDeviceEx(IDirect3D9Ex *pD3D, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentationParameters, D3DDISPLAYMODEEX *pFullscreenDisplayMode, IDirect3DDevice9Ex **ppReturnedDeviceInterface)
 {
-	LOG(INFO) << "Redirecting IDirect3D9Ex::CreateDeviceEx" << '(' << pD3D << ", " << Adapter << ", " << DeviceType << ", " << hFocusWindow << ", " << std::hex << BehaviorFlags << std::dec << ", " << pPresentationParameters << ", " << pFullscreenDisplayMode << ", " << ppReturnedDeviceInterface << ')' << " ...";
+	LOG(INFO) << "Redirecting IDirect3D9Ex::CreateDeviceEx" << '('
+		<<   "this = " << pD3D
+		<< ", Adapter = " << Adapter
+		<< ", DeviceType = " << DeviceType
+		<< ", hFocusWindow = " << hFocusWindow
+		<< ", BehaviorFlags = " << std::hex << BehaviorFlags << std::dec
+		<< ", pPresentationParameters = " << pPresentationParameters
+		<< ", pFullscreenDisplayMode = " << pFullscreenDisplayMode
+		<< ", ppReturnedDeviceInterface = " << ppReturnedDeviceInterface
+		<< ')' << " ...";
 
 	if (pPresentationParameters == nullptr)
 		return D3DERR_INVALIDCALL;
@@ -146,15 +159,14 @@ HRESULT STDMETHODCALLTYPE IDirect3D9Ex_CreateDeviceEx(IDirect3D9Ex *pD3D, UINT A
 	const bool use_software_rendering = (BehaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING) != 0;
 	if (use_software_rendering)
 	{
-		LOG(WARN) << "> Replacing 'D3DCREATE_SOFTWARE_VERTEXPROCESSING' flag with 'D3DCREATE_MIXED_VERTEXPROCESSING' to allow for hardware rendering ...";
+		LOG(INFO) << "> Replacing 'D3DCREATE_SOFTWARE_VERTEXPROCESSING' flag with 'D3DCREATE_MIXED_VERTEXPROCESSING' to allow for hardware rendering ...";
 		BehaviorFlags = (BehaviorFlags & ~D3DCREATE_SOFTWARE_VERTEXPROCESSING) | D3DCREATE_MIXED_VERTEXPROCESSING;
 	}
 
 	const HRESULT hr = reshade::hooks::call(IDirect3D9Ex_CreateDeviceEx, vtable_from_instance(pD3D) + 20)(pD3D, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, pFullscreenDisplayMode, ppReturnedDeviceInterface);
-
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> IDirect3D9Ex::CreateDeviceEx failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "IDirect3D9Ex::CreateDeviceEx failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -165,33 +177,31 @@ HRESULT STDMETHODCALLTYPE IDirect3D9Ex_CreateDeviceEx(IDirect3D9Ex *pD3D, UINT A
 
 HOOK_EXPORT IDirect3D9 *WINAPI Direct3DCreate9(UINT SDKVersion)
 {
-	LOG(INFO) << "Redirecting Direct3DCreate9" << '(' << SDKVersion << ')' << " ...";
+	LOG(INFO) << "Redirecting Direct3DCreate9" << '(' << "SDKVersion = " << SDKVersion << ')' << " ...";
 
 	IDirect3D9 *const res = reshade::hooks::call(Direct3DCreate9)(SDKVersion);
-
 	if (res == nullptr)
 	{
-		LOG(WARN) << "> Direct3DCreate9 failed!";
+		LOG(WARN) << "Direct3DCreate9 failed!";
 		return nullptr;
 	}
 
 	reshade::hooks::install("IDirect3D9::CreateDevice", vtable_from_instance(res), 16, reinterpret_cast<reshade::hook::address>(&IDirect3D9_CreateDevice));
 
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Returning IDirect3D9 object " << res << '.';
+	LOG(INFO) << "Returning IDirect3D9 object " << res << '.';
 #endif
 	return res;
 }
 
-HOOK_EXPORT HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **ppD3D)
+HOOK_EXPORT     HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **ppD3D)
 {
-	LOG(INFO) << "Redirecting Direct3DCreate9Ex" << '(' << SDKVersion << ", " << ppD3D << ')' << " ...";
+	LOG(INFO) << "Redirecting Direct3DCreate9Ex" << '(' << "SDKVersion = " << SDKVersion << ", ppD3D = " << ppD3D << ')' << " ...";
 
 	const HRESULT hr = reshade::hooks::call(Direct3DCreate9Ex)(SDKVersion, ppD3D);
-
 	if (FAILED(hr))
 	{
-		LOG(WARN) << "> Direct3DCreate9Ex failed with error code " << std::hex << hr << std::dec << '!';
+		LOG(WARN) << "Direct3DCreate9Ex failed with error code " << hr << '!';
 		return hr;
 	}
 
@@ -199,7 +209,7 @@ HOOK_EXPORT HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **ppD
 	reshade::hooks::install("IDirect3D9Ex::CreateDeviceEx", vtable_from_instance(*ppD3D), 20, reinterpret_cast<reshade::hook::address>(&IDirect3D9Ex_CreateDeviceEx));
 
 #if RESHADE_VERBOSE_LOG
-	LOG(DEBUG) << "Returning IDirect3D9Ex object " << *ppD3D << '.';
+	LOG(INFO) << "Returning IDirect3D9Ex object " << *ppD3D << '.';
 #endif
 	return hr;
 }

@@ -429,7 +429,10 @@ IMPLEMENT_INTRINSIC_GLSL(floor, 0, {
 	code += "floor(" + id_to_name(args[0].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_HLSL(floor, 0, {
-	code += "floor(" + id_to_name(args[0].base) + ')';
+	if (_shader_model >= 40u)
+		code += "floor(" + id_to_name(args[0].base) + ')';
+	else // Using the floor intrinsic sometimes causes the SM3 D3DCompiler to generate wrong code, so replace it with a custom implementation
+		code += id_to_name(args[0].base) + " - frac(" + id_to_name(args[0].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_SPIRV(floor, 0, {
 	return add_instruction(spv::OpExtInst, convert_type(res_type))
@@ -1361,30 +1364,31 @@ DEFINE_INTRINSIC(mul, 4, float2, float2, float2x2)
 DEFINE_INTRINSIC(mul, 4, float3, float3, float3x3)
 DEFINE_INTRINSIC(mul, 4, float4, float4, float4x4)
 IMPLEMENT_INTRINSIC_GLSL(mul, 4, {
-	code += '(' + id_to_name(args[0].base) + " * " + id_to_name(args[1].base) + ')';
+	// Flip inputs because matrices are column-wise
+	code += '(' + id_to_name(args[1].base) + " * " + id_to_name(args[0].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_HLSL(mul, 4, {
 	code += "mul(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_SPIRV(mul, 4, {
-	return add_instruction(spv::OpVectorTimesMatrix, convert_type(res_type))
+	return add_instruction(spv::OpMatrixTimesVector, convert_type(res_type))
+		.add(args[1].base) // Flip inputs because matrices are column-wise
 		.add(args[0].base)
-		.add(args[1].base)
 		.result;
 	})
 DEFINE_INTRINSIC(mul, 5, float2, float2x2, float2)
 DEFINE_INTRINSIC(mul, 5, float3, float3x3, float3)
 DEFINE_INTRINSIC(mul, 5, float4, float4x4, float4)
 IMPLEMENT_INTRINSIC_GLSL(mul, 5, {
-	code += '(' + id_to_name(args[0].base) + " * " + id_to_name(args[1].base) + ')';
+	code += '(' + id_to_name(args[1].base) + " * " + id_to_name(args[0].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_HLSL(mul, 5, {
 	code += "mul(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_SPIRV(mul, 5, {
-	return add_instruction(spv::OpMatrixTimesVector, convert_type(res_type))
-		.add(args[0].base)
+	return add_instruction(spv::OpVectorTimesMatrix, convert_type(res_type))
 		.add(args[1].base)
+		.add(args[0].base)
 		.result;
 	})
 
@@ -1392,15 +1396,15 @@ DEFINE_INTRINSIC(mul, 6, float2x2, float2x2, float2x2)
 DEFINE_INTRINSIC(mul, 6, float3x3, float3x3, float3x3)
 DEFINE_INTRINSIC(mul, 6, float4x4, float4x4, float4x4)
 IMPLEMENT_INTRINSIC_GLSL(mul, 6, {
-	code += '(' + id_to_name(args[0].base) + " * " + id_to_name(args[1].base) + ')';
+	code += '(' + id_to_name(args[1].base) + " * " + id_to_name(args[0].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_HLSL(mul, 6, {
 	code += "mul(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_SPIRV(mul, 6, {
 	return add_instruction(spv::OpMatrixTimesMatrix, convert_type(res_type))
-		.add(args[0].base)
 		.add(args[1].base)
+		.add(args[0].base)
 		.result;
 	})
 
@@ -1441,10 +1445,13 @@ IMPLEMENT_INTRINSIC_SPIRV(isnan, 0, {
 // ret tex2D(s, coords)
 DEFINE_INTRINSIC(tex2D, 0, float4, sampler, float2)
 IMPLEMENT_INTRINSIC_GLSL(tex2D, 0, {
-	code += "texture(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + " * vec2(1.0, -1.0) + vec2(0.0, 1.0))";
+	// Flip texture coordinates vertically
+	//   coords * vec2(1, -1) + vec2(0, 1)
+	code += "texture(" + id_to_name(args[0].base) + ", " +
+		id_to_name(args[1].base) + " * vec2(1.0, -1.0) + vec2(0.0, 1.0))";
 	})
 IMPLEMENT_INTRINSIC_HLSL(tex2D, 0, {
-	if (_shader_model >= 40u)
+	if (_shader_model >= 40u) // SM4 and higher use a more object-oriented programming model for textures
 		code += id_to_name(args[0].base) + ".t.Sample(" + id_to_name(args[0].base) + ".s, " + id_to_name(args[1].base) + ')';
 	else
 		code += "tex2D(" + id_to_name(args[0].base) + ".s, " + id_to_name(args[1].base) + ')';
@@ -1459,7 +1466,9 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2D, 0, {
 // ret tex2Doffset(s, coords, offset)
 DEFINE_INTRINSIC(tex2Doffset, 0, float4, sampler, float2, int2)
 IMPLEMENT_INTRINSIC_GLSL(tex2Doffset, 0, {
-	code += "textureOffset(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + " * vec2(1.0, -1.0) + vec2(0.0, 1.0), " + id_to_name(args[2].base) + " * ivec2(1, -1))";
+	code += "textureOffset(" + id_to_name(args[0].base) + ", " +
+		id_to_name(args[1].base) + " * vec2(1.0, -1.0) + vec2(0.0, 1.0), " +
+		id_to_name(args[2].base) + " * ivec2(1, -1))";
 	})
 IMPLEMENT_INTRINSIC_HLSL(tex2Doffset, 0, {
 	if (_shader_model >= 40u)
@@ -1468,12 +1477,14 @@ IMPLEMENT_INTRINSIC_HLSL(tex2Doffset, 0, {
 		code += "tex2D(" + id_to_name(args[0].base) + ".s, " + id_to_name(args[1].base) + " + " + id_to_name(args[2].base) + " * " + id_to_name(args[0].base) + ".pixelsize)";
 	})
 IMPLEMENT_INTRINSIC_SPIRV(tex2Doffset, 0, {
-	add_capability(spv::CapabilityImageGatherExtended);
+	// Non-constant offset operand needs extended capability
+	if (!args[2].is_constant)
+		add_capability(spv::CapabilityImageGatherExtended);
 
 	return add_instruction(spv::OpImageSampleImplicitLod, convert_type(res_type))
 		.add(args[0].base)
 		.add(args[1].base)
-		.add(spv::ImageOperandsOffsetMask)
+		.add(args[2].is_constant ? spv::ImageOperandsConstOffsetMask : spv::ImageOperandsOffsetMask)
 		.add(args[2].base)
 		.result;
 	})
@@ -1481,7 +1492,9 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Doffset, 0, {
 // ret tex2Dlod(s, coords)
 DEFINE_INTRINSIC(tex2Dlod, 0, float4, sampler, float4)
 IMPLEMENT_INTRINSIC_GLSL(tex2Dlod, 0, {
-	code += "textureLod(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + ".xy * vec2(1.0, -1.0) + vec2(0.0, 1.0), " + id_to_name(args[1].base) + ".w)";
+	code += "textureLod(" + id_to_name(args[0].base) + ", " +
+		id_to_name(args[1].base) + ".xy * vec2(1.0, -1.0) + vec2(0.0, 1.0), " +
+		id_to_name(args[1].base) + ".w)";
 	})
 IMPLEMENT_INTRINSIC_HLSL(tex2Dlod, 0, {
 	if (_shader_model >= 40u)
@@ -1511,7 +1524,10 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dlod, 0, {
 // ret tex2Dlodoffset(s, coords, offset)
 DEFINE_INTRINSIC(tex2Dlodoffset, 0, float4, sampler, float4, int2)
 IMPLEMENT_INTRINSIC_GLSL(tex2Dlodoffset, 0, {
-	code += "textureLodOffset(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + ".xy * vec2(1.0, -1.0) + vec2(0.0, 1.0), " + id_to_name(args[1].base) + ".w, " + id_to_name(args[2].base) + " * ivec2(1, -1))";
+	// Flip texture coordinates and offset vertically
+	code += "textureLodOffset(" + id_to_name(args[0].base) + ", " +
+		id_to_name(args[1].base) + ".xy * vec2(1.0, -1.0) + vec2(0.0, 1.0), " + id_to_name(args[1].base) + ".w, " +
+		id_to_name(args[2].base) + " * ivec2(1, -1))";
 	})
 IMPLEMENT_INTRINSIC_HLSL(tex2Dlodoffset, 0, {
 	if (_shader_model >= 40u)
@@ -1520,7 +1536,8 @@ IMPLEMENT_INTRINSIC_HLSL(tex2Dlodoffset, 0, {
 		code += "tex2Dlod(" + id_to_name(args[0].base) + ".s, " + id_to_name(args[1].base) + " + float4(" + id_to_name(args[2].base) + " * " + id_to_name(args[0].base) + ".pixelsize, 0, 0))";
 	})
 IMPLEMENT_INTRINSIC_SPIRV(tex2Dlodoffset, 0, {
-	add_capability(spv::CapabilityImageGatherExtended);
+	if (!args[2].is_constant)
+		add_capability(spv::CapabilityImageGatherExtended);
 
 	const spv::Id xy = add_instruction(spv::OpVectorShuffle, convert_type({ type::t_float, 2, 1 }))
 		.add(args[1].base)
@@ -1536,7 +1553,7 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dlodoffset, 0, {
 	return add_instruction(spv::OpImageSampleExplicitLod, convert_type(res_type))
 		.add(args[0].base)
 		.add(xy)
-		.add(spv::ImageOperandsLodMask | spv::ImageOperandsOffsetMask)
+		.add(spv::ImageOperandsLodMask | (args[2].is_constant ? spv::ImageOperandsConstOffsetMask : spv::ImageOperandsOffsetMask))
 		.add(lod)
 		.add(args[2].base)
 		.result;
@@ -1560,7 +1577,8 @@ IMPLEMENT_INTRINSIC_HLSL(tex2Dsize, 0, {
 	})
 IMPLEMENT_INTRINSIC_HLSL(tex2Dsize, 1, {
 	if (_shader_model >= 40u)
-		code += "uint temp" + std::to_string(res) + "; " + id_to_name(args[0].base) + ".t.GetDimensions(" + id_to_name(args[1].base) + ", " + id_to_name(res) + ".x, " + id_to_name(res) + ".y, temp" + std::to_string(res) + ')';
+		code += "uint temp" + std::to_string(res) + "; " + // Don't need the number of levels out value, so route that to a dummy variable
+			id_to_name(args[0].base) + ".t.GetDimensions(" + id_to_name(args[1].base) + ", " + id_to_name(res) + ".x, " + id_to_name(res) + ".y, temp" + std::to_string(res) + ')';
 	else
 		code += "int2(1.0 / " + id_to_name(args[0].base) + ".pixelsize) / exp2(" + id_to_name(args[1].base) + ')';
 	})
@@ -1568,19 +1586,19 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dsize, 0, {
 	add_capability(spv::CapabilityImageQuery);
 
 	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
-		.add(args[0].base)
-		.result;
+		.add(args[0].base).result;
+	const spv::Id level = emit_constant(0u);
 
-	return add_instruction(spv::OpImageQuerySize, convert_type(res_type))
+	return add_instruction(spv::OpImageQuerySizeLod, convert_type(res_type))
 		.add(image)
+		.add(level)
 		.result;
 	})
 IMPLEMENT_INTRINSIC_SPIRV(tex2Dsize, 1, {
 	add_capability(spv::CapabilityImageQuery);
 
 	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
-		.add(args[0].base)
-		.result;
+		.add(args[0].base).result;
 
 	return add_instruction(spv::OpImageQuerySizeLod, convert_type(res_type))
 		.add(image)
@@ -1591,13 +1609,22 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dsize, 1, {
 // ret tex2Dfetch(s, coords)
 DEFINE_INTRINSIC(tex2Dfetch, 0, float4, sampler, int4)
 IMPLEMENT_INTRINSIC_GLSL(tex2Dfetch, 0, {
-	code += "texelFetch(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + ".xy - ivec2(vec2(0, 1.0 - 1.0 / exp2(float(" + id_to_name(args[1].base) + ".w))) * textureSize(" + id_to_name(args[0].base) + ", 0)), " + id_to_name(args[1].base) + ".w)";
+	// Flip texture coordinates vertically
+	//   coords * ivec2(1, -1) + ivec2(0, size.y - 1)
+	code += "texelFetch(" + id_to_name(args[0].base) + ", " +
+		id_to_name(args[1].base) + ".xy * ivec2(1, -1) + ivec2(0, textureSize(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + ".w).y - 1), " +
+		id_to_name(args[1].base) + ".w)";
 	})
 IMPLEMENT_INTRINSIC_HLSL(tex2Dfetch, 0, {
 	if (_shader_model >= 40u)
 		code += id_to_name(args[0].base) + ".t.Load(" + id_to_name(args[1].base) + ".xyw)";
 	else
-		code += "tex2Dlod(" + id_to_name(args[0].base) + ".s, float4((" + id_to_name(args[1].base) + ".xy * exp2(" + id_to_name(args[1].base) + ".w) + 0.5 /* half-pixel offset */) * " + id_to_name(args[0].base) + ".pixelsize, 0, " + id_to_name(args[1].base) + ".w))";
+		// SM3 does not have a fetch intrinsic, so emulate it by transforming coordinates into texture space ones
+		// Also add a half-pixel offset to align texels with pixels
+		//   (coords + 0.5) / size
+		code += "tex2Dlod(" + id_to_name(args[0].base) + ".s, float4((" +
+			id_to_name(args[1].base) + ".xy + 0.5) * " + id_to_name(args[0].base) + ".pixelsize * exp2(" + id_to_name(args[1].base) + ".w), 0, " +
+			id_to_name(args[1].base) + ".w))";
 	})
 IMPLEMENT_INTRINSIC_SPIRV(tex2Dfetch, 0, {
 	const spv::Id xy = add_instruction(spv::OpVectorShuffle, convert_type({ type::t_int, 2, 1 }))
@@ -1612,8 +1639,7 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dfetch, 0, {
 		.result;
 
 	const spv::Id image = add_instruction(spv::OpImage, convert_type({ type::t_texture }))
-		.add(args[0].base)
-		.result;
+		.add(args[0].base).result;
 
 	return add_instruction(spv::OpImageFetch, convert_type(res_type))
 		.add(image)
@@ -1628,14 +1654,16 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dfetch, 0, {
 // ret tex2Dgather(s, coords, component)
 DEFINE_INTRINSIC(tex2Dgather, 0, float4, sampler, float2, int)
 IMPLEMENT_INTRINSIC_GLSL(tex2Dgather, 0, {
-	code += "textureGather(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + " * vec2(1.0, -1.0) + vec2(0.0, 1.0), " + id_to_name(args[2].base) + ')';
+	code += "textureGather(" + id_to_name(args[0].base) + ", " +
+		id_to_name(args[1].base) + " * vec2(1.0, -1.0) + vec2(0.0, 1.0), " +
+		id_to_name(args[2].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_HLSL(tex2Dgather, 0, {
 	if (_shader_model >= 50u) {
 		const char *const names[4] = { "GatherRed" COMMA "GatherGreen" COMMA "GatherBlue" COMMA "GatherAlpha" };
 		for (unsigned int c = 0; c < 4; ++c)
 			code += id_to_name(args[2].base) + " == " + std::to_string(c) + " ? " + id_to_name(args[0].base) + ".t." + names[c] + '(' + id_to_name(args[0].base) + ".s, " + id_to_name(args[1].base) + ") : ";
-	} else if (_shader_model >= 40u) {
+	} else if (_shader_model >= 40u) { // Emulate texture gather intrinsic by sampling each location separately
 		for (unsigned int c = 0; c < 4; ++c)
 			code += id_to_name(args[2].base) + " == " + std::to_string(c) + " ? float4(" +
 				id_to_name(args[0].base) + ".t.SampleLevel(" + id_to_name(args[0].base) + ".s, " + id_to_name(args[1].base) + ", 0, int2(0, 0))." + "rgba"[c] + ", " +
@@ -1663,7 +1691,10 @@ IMPLEMENT_INTRINSIC_SPIRV(tex2Dgather, 0, {
 // ret tex2Dgatheroffset(s, coords, offset, component)
 DEFINE_INTRINSIC(tex2Dgatheroffset, 0, float4, sampler, float2, int2, int)
 IMPLEMENT_INTRINSIC_GLSL(tex2Dgatheroffset, 0, {
-	code += "textureGatherOffset(" + id_to_name(args[0].base) + ", " + id_to_name(args[1].base) + " * vec2(1.0, -1.0) + vec2(0.0, 1.0), " + id_to_name(args[2].base) + " * ivec2(1, -1), " + id_to_name(args[3].base) + ')';
+	code += "textureGatherOffset(" + id_to_name(args[0].base) + ", " +
+		id_to_name(args[1].base) + " * vec2(1.0, -1.0) + vec2(0.0, 1.0), " +
+		id_to_name(args[2].base) + " * ivec2(1, -1), " +
+		id_to_name(args[3].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_HLSL(tex2Dgatheroffset, 0, {
 	if (_shader_model >= 50u) {
@@ -1688,17 +1719,19 @@ IMPLEMENT_INTRINSIC_HLSL(tex2Dgatheroffset, 0, {
 	code += '0';
 	})
 IMPLEMENT_INTRINSIC_SPIRV(tex2Dgatheroffset, 0, {
-	add_capability(spv::CapabilityImageGatherExtended);
+	if (!args[2].is_constant)
+		add_capability(spv::CapabilityImageGatherExtended);
 
 	return add_instruction(spv::OpImageGather, convert_type(res_type))
 		.add(args[0].base)
 		.add(args[1].base)
 		.add(args[3].base)
-		.add(spv::ImageOperandsOffsetMask)
+		.add(args[2].is_constant ? spv::ImageOperandsConstOffsetMask : spv::ImageOperandsOffsetMask)
 		.add(args[2].base)
 		.result;
 	})
 
+#undef COMMA
 #undef DEFINE_INTRINSIC
 #undef IMPLEMENT_INTRINSIC_GLSL
 #undef IMPLEMENT_INTRINSIC_HLSL

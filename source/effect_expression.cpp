@@ -3,10 +3,12 @@
  * License: https://github.com/crosire/reshade#license
  */
 
-#include "effect_expression.hpp"
 #include "effect_lexer.hpp"
 #include "effect_codegen.hpp"
-#include <assert.h>
+#include <cmath> // fmod
+#include <cassert>
+#include <cstring> // memcpy, memset
+#include <algorithm> // std::min, std::max
 
 reshadefx::type reshadefx::type::merge(const type &lhs, const type &rhs)
 {
@@ -30,7 +32,60 @@ reshadefx::type reshadefx::type::merge(const type &lhs, const type &rhs)
 	return result;
 }
 
-void reshadefx::expression::reset_to_lvalue(const reshadefx::location &loc, reshadefx::codegen::id in_base, const reshadefx::type &in_type)
+std::string reshadefx::type::description() const
+{
+	std::string result;
+	switch (base)
+	{
+	case reshadefx::type::t_void:
+		result = "void";
+		break;
+	case reshadefx::type::t_bool:
+		result = "bool";
+		break;
+	case reshadefx::type::t_int:
+		result = "int";
+		break;
+	case reshadefx::type::t_uint:
+		result = "uint";
+		break;
+	case reshadefx::type::t_float:
+		result = "float";
+		break;
+	case reshadefx::type::t_string:
+		result = "string";
+		break;
+	case reshadefx::type::t_struct:
+		result = "struct";
+		break;
+	case reshadefx::type::t_sampler:
+		result = "sampler";
+		break;
+	case reshadefx::type::t_texture:
+		result = "texture";
+		break;
+	case reshadefx::type::t_function:
+		result = "function";
+		break;
+	}
+
+	if (rows > 1 || cols > 1)
+		result += std::to_string(rows);
+	if (cols > 1)
+		result += 'x' + std::to_string(cols);
+
+	if (is_array())
+	{
+		result += '[';
+		if (array_length > 0)
+			result += std::to_string(array_length);
+		result += ']';
+	}
+
+	return result;
+}
+
+void reshadefx::expression::reset_to_lvalue(const reshadefx::location &loc, uint32_t in_base, const reshadefx::type &in_type)
 {
 	type = in_type;
 	base = in_base;
@@ -39,7 +94,7 @@ void reshadefx::expression::reset_to_lvalue(const reshadefx::location &loc, resh
 	is_constant = false;
 	chain.clear();
 }
-void reshadefx::expression::reset_to_rvalue(const reshadefx::location &loc, reshadefx::codegen::id in_base, const reshadefx::type &in_type)
+void reshadefx::expression::reset_to_rvalue(const reshadefx::location &loc, uint32_t in_base, const reshadefx::type &in_type)
 {
 	type = in_type;
 	type.qualifiers |= type::q_const;
@@ -169,7 +224,7 @@ void reshadefx::expression::add_member_access(unsigned int index, const reshadef
 	type = in_type;
 	is_constant = false;
 }
-void reshadefx::expression::add_dynamic_index_access(reshadefx::codegen::id index_expression)
+void reshadefx::expression::add_dynamic_index_access(uint32_t index_expression)
 {
 	assert(type.is_numeric() && !is_constant);
 
@@ -199,15 +254,21 @@ void reshadefx::expression::add_constant_index_access(unsigned int index)
 
 	if (type.is_array())
 	{
+		assert(type.array_length < 0 || index < static_cast<unsigned int>(type.array_length));
+
 		type.array_length = 0;
 	}
 	else if (type.is_matrix())
 	{
+		assert(index < type.components());
+
 		type.rows = type.cols;
 		type.cols = 1;
 	}
 	else if (type.is_vector())
 	{
+		assert(index < type.components());
+
 		type.rows = 1;
 	}
 
@@ -219,8 +280,8 @@ void reshadefx::expression::add_constant_index_access(unsigned int index)
 		}
 		else if (prev_type.is_matrix()) // Indexing into a matrix returns a row of it as a vector
 		{
-			for (unsigned int i = 0; i < 4; ++i)
-				constant.as_uint[i] = constant.as_uint[index * 4 + i];
+			for (unsigned int i = 0; i < prev_type.cols; ++i)
+				constant.as_uint[i] = constant.as_uint[index * prev_type.cols + i];
 		}
 		else // Indexing into a vector returns the element as a scalar
 		{
@@ -246,10 +307,10 @@ void reshadefx::expression::add_swizzle_access(const signed char swizzle[4], uns
 		assert(constant.array_data.empty());
 
 		uint32_t data[16];
-		memcpy(data, &constant.as_uint[0], sizeof(data));
+		std::memcpy(data, &constant.as_uint[0], sizeof(data));
 		for (unsigned int i = 0; i < length; ++i)
 			constant.as_uint[i] = data[swizzle[i]];
-		memset(&constant.as_uint[length], 0, sizeof(uint32_t) * (16 - length)); // Clear the rest of the constant
+		std::memset(&constant.as_uint[length], 0, sizeof(uint32_t) * (16 - length)); // Clear the rest of the constant
 	}
 	else if (length == 1 && prev_type.is_vector()) // Use indexing when possible since the code generation logic is simpler in SPIR-V
 	{
@@ -302,7 +363,7 @@ bool reshadefx::expression::evaluate_constant_expression(reshadefx::tokenid op, 
 				if (rhs.as_float[i] == 0)
 					constant.as_float[i] = std::numeric_limits<float>::quiet_NaN();
 				else
-					constant.as_float[i] = fmodf(constant.as_float[i], rhs.as_float[i]);
+					constant.as_float[i] = std::fmod(constant.as_float[i], rhs.as_float[i]);
 		}
 		else if (type.is_signed()) {
 			for (unsigned int i = 0; i < type.components(); ++i)

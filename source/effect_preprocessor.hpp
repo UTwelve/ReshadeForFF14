@@ -5,13 +5,11 @@
 
 #pragma once
 
-#include <stack>
-#include <vector>
-#include <unordered_map>
-#include <unordered_set>
-#include <memory>
+#include "effect_token.hpp"
+#include <memory> // std::unique_ptr
 #include <filesystem>
-#include "effect_lexer.hpp"
+#include <unordered_set>
+#include <unordered_map>
 
 namespace reshadefx
 {
@@ -28,6 +26,10 @@ namespace reshadefx
 			bool is_variadic = false;
 			bool is_function_like = false;
 		};
+
+		// Define constructor explicitly because lexer class is not included here
+		preprocessor();
+		~preprocessor();
 
 		/// <summary>
 		/// Add an include directory to the list of search paths used when resolving #include directives.
@@ -48,7 +50,7 @@ namespace reshadefx
 		/// <param name="name">The name of the macro to define.</param>
 		/// <param name="value">The value to define that macro to.</param>
 		/// <returns></returns>
-		bool add_macro_definition(const std::string &name, std::string value = "1");
+		bool add_macro_definition(const std::string &name, std::string value = "1") { return add_macro_definition(name, macro { std::move(value) }); }
 
 		/// <summary>
 		/// Open the specified file, parse its contents and append them to the output.
@@ -79,33 +81,34 @@ namespace reshadefx
 		/// </summary>
 		std::vector<std::filesystem::path> included_files() const;
 
+		/// <summary>
+		/// Get a list of all defines that were used in #ifdef and #ifndef lines
+		/// </summary>
+		/// <returns></returns>
+		std::vector<std::pair<std::string, std::string>> used_macro_definitions() const;
+
 	private:
 		struct if_level
 		{
-			token token;
-			bool value, skipping;
-			if_level *parent;
+			bool value;
+			bool skipping;
+			reshadefx::token token;
 		};
 		struct input_level
 		{
 			std::string name;
-			std::unique_ptr<lexer> lexer;
+			std::unique_ptr<class lexer> lexer;
 			token next_token;
-			std::stack<if_level> if_stack;
 			std::unordered_set<std::string> hidden_macros;
-			input_level *parent;
 		};
 
 		void error(const location &location, const std::string &message);
 		void warning(const location &location, const std::string &message);
 
-		lexer &current_lexer();
-		std::stack<if_level> &current_if_stack();
-
 		void push(std::string input, const std::string &name = std::string());
 
 		bool peek(tokenid token) const;
-		void consume();
+		bool consume();
 		void consume_until(tokenid token);
 		bool accept(tokenid token);
 		bool expect(tokenid token);
@@ -131,11 +134,16 @@ namespace reshadefx
 		void create_macro_replacement_list(macro &macro);
 
 		bool _success = true;
-		token _token;
+		std::string _output, _errors;
+		std::string _current_token_raw_data;
+		reshadefx::token _token;
+		std::vector<if_level> _if_stack;
 		std::vector<input_level> _input_stack;
+		size_t _next_input_index = 0;
+		size_t _current_input_index = 0;
+		unsigned short _recursion_count = 0;
 		location _output_location;
-		std::string _output, _errors, _current_token_raw_data;
-		int _recursion_count = 0;
+		std::unordered_set<std::string> _used_macros;
 		std::unordered_map<std::string, macro> _macros;
 		std::vector<std::filesystem::path> _include_paths;
 		std::unordered_map<std::string, std::string> _filecache;
