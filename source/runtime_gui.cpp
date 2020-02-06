@@ -386,9 +386,13 @@ void reshade::runtime::build_font_atlas()
 	{
 		ImFontConfig cfg;
 		cfg.SizePixels = static_cast<float>(i == 0 ? _font_size : _editor_font_size);
+		cfg.OversampleH = 1;
+		cfg.OversampleV = 1;
 
 		const std::filesystem::path &font_path = i == 0 ? _font : _editor_font;
-		if (std::error_code ec; !std::filesystem::is_regular_file(font_path, ec) || !atlas->AddFontFromFileTTF(font_path.u8string().c_str(), cfg.SizePixels))
+		//if (std::error_code ec; !std::filesystem::is_regular_file(font_path, ec) || !atlas->AddFontFromFileTTF(font_path.u8string().c_str(), cfg.SizePixels))
+		//if (std::error_code ec; !std::filesystem::is_regular_file(font_path, ec) || !atlas->AddFontFromFileTTF(font_path.u8string().c_str(), cfg.SizePixels, NULL, atlas->GetGlyphRangesChineseSimplifiedCommon()))
+		if (std::error_code ec; !std::filesystem::is_regular_file(font_path, ec) || !atlas->AddFontFromFileTTF(font_path.u8string().c_str(), cfg.SizePixels, NULL, atlas->GetGlyphRangesChineseFull()))
 			atlas->AddFontDefault(&cfg); // Use default font if custom font failed to load or does not exist
 	}
 
@@ -515,21 +519,21 @@ void reshade::runtime::draw_ui()
 				else
 					ImGui::TextColored(COLOR_RED, "Unable to save screenshot because path doesn't exist: %s.", _screenshot_path.u8string().c_str());
 			else
-				ImGui::Text("Screenshot successfully saved to %s", _last_screenshot_file.u8string().c_str());
+				ImGui::Text(u8"截图被保存为 %s", _last_screenshot_file.u8string().c_str());
 		}
 		else
 		{
-			ImGui::TextUnformatted("ReShade " VERSION_STRING_FILE " by crosire");
+			ImGui::TextUnformatted(u8"ReShadeForFFXIV代码版本 " VERSION_STRING_FILE " by Haikui 群55015571");
 
 			if (_needs_update)
 			{
 				ImGui::TextColored(COLOR_YELLOW,
-					"An update is available! Please visit https://reshade.me and install the new version (v%lu.%lu.%lu).",
+					u8"3AReal预设请在 https://github.com/UTwelve/3AReal/releases 查看最新版本.",
 					_latest_version[0], _latest_version[1], _latest_version[2]);
 			}
 			else
 			{
-				ImGui::TextUnformatted("Visit https://reshade.me for news, updates, shaders and discussion.");
+				ImGui::TextUnformatted(u8"3AReal预设请在 https://github.com/UTwelve/3AReal/releases 查看最新版本.");
 			}
 
 			ImGui::Spacing();
@@ -540,15 +544,15 @@ void reshade::runtime::draw_ui()
 			if (_reload_remaining_effects != 0 && _reload_remaining_effects != std::numeric_limits<size_t>::max())
 			{
 				ImGui::Text(
-					"Loading (%zu effects remaining) ... "
-					"This might take a while. The application could become unresponsive for some time.",
+					u8"加载中 (剩余 %zu 个效果器) ... "
+					u8"这需要一些时间,可能会短时间内无法响应.",
 					_reload_remaining_effects.load());
 			}
 			else if (!_reload_compile_queue.empty())
 			{
 				ImGui::Text(
-					"Compiling (%zu effects remaining) ... "
-					"This might take a while. The application could become unresponsive for some time.",
+					u8"编译中 (剩余 %zu 个效果器) ... "
+					u8"这需要一些时间,可能会短时间内无法响应.",
 					_reload_compile_queue.size());
 			}
 			else if (_tutorial_index == 0)
@@ -572,7 +576,7 @@ void reshade::runtime::draw_ui()
 			{
 				ImGui::Spacing();
 				ImGui::TextColored(COLOR_RED,
-					"There were errors compiling some shaders. Check the log for more details.");
+					u8"编译一些着色器时出错.查看Log了解更多细节.");
 			}
 		}
 
@@ -810,11 +814,11 @@ void reshade::runtime::draw_ui_home()
 	}
 
 	if (!_effects_enabled)
-		ImGui::Text("Effects are disabled. Press '%s' to enable them again.", input::key_name(_effects_key_data).c_str());
+		ImGui::Text(u8"全局关闭中. 按 '%s' 重新启用.", input::key_name(_effects_key_data).c_str());
 
 	if (!_last_reload_successful)
 	{
-		std::string error_message = "There were errors compiling the following shaders:";
+		std::string error_message = u8"编译下列着色器时出错:";
 		for (const effect &effect : _effects)
 			if (!effect.compile_sucess)
 				error_message += ' ' + effect.source_file.filename().u8string() + ',';
@@ -876,7 +880,7 @@ void reshade::runtime::draw_ui_home()
 
 		ImGui::SameLine();
 
-		if (ImGui::Button("Active to top", ImVec2(10 * _font_size - _imgui_context->Style.ItemSpacing.x, 0)))
+		if (ImGui::Button(u8"移至顶", ImVec2(10 * _font_size - _imgui_context->Style.ItemSpacing.x, 0)))
 		{
 			for (auto i = _techniques.begin(); i != _techniques.end(); ++i)
 			{
@@ -898,10 +902,10 @@ void reshade::runtime::draw_ui_home()
 				}); it != _techniques.end())
 			{
 				std::stable_sort(it, _techniques.end(), [](const reshade::technique &lhs, const reshade::technique &rhs) {
-						std::string lhs_label(lhs.annotation_as_string("ui_label"));
+						std::string lhs_label(lhs.annotation_as_string(u8"ui_label"));
 						if (lhs_label.empty()) lhs_label = lhs.name;
 						std::transform(lhs_label.begin(), lhs_label.end(), lhs_label.begin(), [](char c) { return static_cast<char>(toupper(c)); });
-						std::string rhs_label(rhs.annotation_as_string("ui_label"));
+						std::string rhs_label(rhs.annotation_as_string(u8"ui_label"));
 						if (rhs_label.empty()) rhs_label = rhs.name;
 						std::transform(rhs_label.begin(), rhs_label.end(), rhs_label.begin(), [](char c) { return static_cast<char>(toupper(c)); });
 						return lhs_label < rhs_label;
@@ -913,7 +917,7 @@ void reshade::runtime::draw_ui_home()
 
 		ImGui::SameLine();
 
-		if (ImGui::Button(_effects_expanded_state & 2 ? "Collapse all" : "Expand all", ImVec2(10 * _font_size - _imgui_context->Style.ItemSpacing.x, 0)))
+		if (ImGui::Button(_effects_expanded_state & 2 ? u8"闭合所有" : u8"展开所有", ImVec2(10 * _font_size - _imgui_context->Style.ItemSpacing.x, 0)))
 			_effects_expanded_state = (~_effects_expanded_state & 2) | 1;
 
 		if (_tutorial_index == 2)
@@ -977,14 +981,14 @@ void reshade::runtime::draw_ui_home()
 	{
 		ImGui::Spacing();
 
-		if (ImGui::Button("Reload", ImVec2(-11.5f * _font_size, 0)))
+		if (ImGui::Button(u8"更新并重新加载", ImVec2(-11.5f * _font_size, 0)))
 		{
 			load_effects();
 		}
 
 		ImGui::SameLine();
 
-		if (ImGui::Checkbox("Performance Mode", &_performance_mode))
+		if (ImGui::Checkbox(u8"性能模式", &_performance_mode))
 		{
 			save_config();
 			load_effects(); // Reload effects after switching
@@ -1044,12 +1048,12 @@ void reshade::runtime::draw_ui_settings()
 
 	if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		modified |= imgui_key_input("Overlay Key", _menu_key_data, *_input);
+		modified |= imgui_key_input(u8"菜单开关快捷键", _menu_key_data, *_input);
 		_ignore_shortcuts |= ImGui::IsItemActive();
 
-		modified |= imgui_key_input("Effect Toggle Key", _effects_key_data, *_input);
+		modified |= imgui_key_input(u8"效果重载快捷键", _effects_key_data, *_input);
 		_ignore_shortcuts |= ImGui::IsItemActive();
-		modified |= imgui_key_input("Effect Reload Key", _reload_key_data, *_input);
+		modified |= imgui_key_input(u8"全局开关快捷键", _reload_key_data, *_input);
 		_ignore_shortcuts |= ImGui::IsItemActive();
 
 		modified |= imgui_key_input("Previous Preset Key", _prev_preset_key_data, *_input);
@@ -1077,7 +1081,7 @@ void reshade::runtime::draw_ui_settings()
 
 	if (ImGui::CollapsingHeader("Screenshots", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		modified |= imgui_key_input("Screenshot Key", _screenshot_key_data, *_input);
+		modified |= imgui_key_input(u8"截图快捷键", _screenshot_key_data, *_input);
 		_ignore_shortcuts |= ImGui::IsItemActive();
 
 		modified |= imgui_directory_input_box("Screenshot Path", _screenshot_path, _file_selection_path);
@@ -1573,12 +1577,36 @@ void reshade::runtime::draw_ui_log()
 
 void reshade::runtime::draw_ui_about()
 {
-	ImGui::TextUnformatted("ReShade " VERSION_STRING_FILE);
+	ImGui::TextUnformatted(u8"ReshadeForFFXIV" VERSION_STRING_FILE);
 
 	ImGui::PushTextWrapPos();
+	ImGui::TextUnformatted(u8"    " VERSION_STRING_FILE );
+	ImGui::TextUnformatted(u8"    核心构建版本自 ReShade2020.2.6-Github");
+	ImGui::TextUnformatted(u8"    ");
+	ImGui::TextUnformatted(u8"ReshadeForFFXIV与3Areal:");
+	ImGui::TextUnformatted(u8"    1.ReshadeForFFXIV以Reshade核心,针对FFXIV进行改进并重新编译.");
+	ImGui::TextUnformatted(u8"    2.3AReal为ReshadeForFFXIV自带预设,专为FFXIV画面设计制作.");
+	ImGui::TextUnformatted(u8"    3.ReshadeForFFXIV与3AReal的更新地址见 https://github.com/UTwelve/3AReal .");
+	ImGui::TextUnformatted(u8"    4.交流QQun55015571 .");
+	ImGui::TextUnformatted(u8"    ");
+	ImGui::TextUnformatted(u8"声明:");
+	ImGui::TextUnformatted(u8" 1.本版本构建目的为适配FFXIV游戏环境,请勿用于其他用途.使用风险自负.");
+	ImGui::TextUnformatted(u8" 2.使用其他预设时本作者不为其背书,感谢大家的支持.");
+	ImGui::TextUnformatted(u8"    ");
+	ImGui::TextUnformatted(u8"    ");
+	ImGui::TextUnformatted(u8"    ");
 	ImGui::TextUnformatted(R"(Copyright (C) 2014 Patrick Mours. All rights reserved.
-
 https://github.com/crosire/reshade
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+ 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+ 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.)");
+
+
+	if (ImGui::CollapsingHeader("ReShade"))
+	{
+		ImGui::TextUnformatted(R"(Copyright (C) 2014 Patrick Mours. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
 
@@ -1587,7 +1615,7 @@ Redistribution and use in source and binary forms, with or without modification,
  3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.)");
-
+	}
 	if (ImGui::CollapsingHeader("MinHook"))
 	{
 		ImGui::TextUnformatted(R"(Copyright (C) 2009-2016 Tsuda Kageyu. All rights reserved.
@@ -2224,9 +2252,9 @@ void reshade::runtime::draw_variable_editor()
 		}
 
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(_imgui_context->Style.FramePadding.x, 0));
-		if (imgui_popup_button("Reset all to default", _variable_editor_tabs ? ImGui::GetContentRegionAvail().x : ImGui::CalcItemWidth()))
+		if (imgui_popup_button(u8"清除全部参数", _variable_editor_tabs ? ImGui::GetContentRegionAvail().x : ImGui::CalcItemWidth()))
 		{
-			ImGui::Text("Do you really want to reset all values in '%s' to their defaults?", source_file.c_str());
+			ImGui::Text(u8"您真的想把 '%s' 中的所有值清零吗?", source_file.c_str());
 
 			if (ImGui::Button("Yes", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
 			{
@@ -2260,7 +2288,7 @@ void reshade::runtime::draw_variable_editor()
 			if (variable.annotation_as_int("hidden") || variable.special != special_uniform::none)
 				continue;
 
-			if (const std::string_view category = variable.annotation_as_string("ui_category");
+			if (const std::string_view category = variable.annotation_as_string(u8"ui_category");
 				category != current_category)
 			{
 				current_category = category;
@@ -2273,7 +2301,7 @@ void reshade::runtime::draw_variable_editor()
 							category_label.insert(0, " ");
 
 					ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_NoTreePushOnOpen;
-					if (!variable.annotation_as_int("ui_category_closed"))
+					if (!variable.annotation_as_int(u8"ui_category_closed"))
 						flags |= ImGuiTreeNodeFlags_DefaultOpen;
 
 					category_closed = !ImGui::TreeNodeEx(category_label.c_str(), flags);
@@ -2396,20 +2424,20 @@ void reshade::runtime::draw_variable_editor()
 			}
 
 			// Display tooltip
-			if (const std::string_view tooltip = variable.annotation_as_string("ui_tooltip");
+			if (const std::string_view tooltip = variable.annotation_as_string(u8"ui_tooltip");
 				!tooltip.empty() && ImGui::IsItemHovered())
-				ImGui::SetTooltip("%s", tooltip.data());
+				ImGui::SetTooltip(u8"%s", tooltip.data());
 
 			// Create context menu
-			if (ImGui::BeginPopupContextItem("##context"))
+			if (ImGui::BeginPopupContextItem(u8"##context"))
 			{
 				if (variable.supports_toggle_key() &&
-					imgui_key_input("##toggle_key", variable.toggle_key_data, *_input))
+					imgui_key_input(u8"##toggle_key", variable.toggle_key_data, *_input))
 					modified = true;
 
 				const float button_width = ImGui::CalcItemWidth();
 
-				if (ImGui::Button("Reset to default", ImVec2(button_width, 0)))
+				if (ImGui::Button(u8"Reset to default", ImVec2(button_width, 0)))
 				{
 					modified = true;
 					reset_uniform_value(variable);
@@ -2422,7 +2450,7 @@ void reshade::runtime::draw_variable_editor()
 			if (variable.toggle_key_data[0] != 0)
 			{
 				ImGui::SameLine(ImGui::GetWindowContentRegionWidth() - 120);
-				ImGui::TextDisabled("%s", reshade::input::key_name(variable.toggle_key_data).c_str());
+				ImGui::TextDisabled(u8"%s", reshade::input::key_name(variable.toggle_key_data).c_str());
 			}
 
 			ImGui::PopID();
@@ -2586,10 +2614,10 @@ void reshade::runtime::draw_technique_editor()
 		// Gray out disabled techniques and mark techniques which failed to compile red
 		ImGui::PushStyleColor(ImGuiCol_Text, compile_success ? _imgui_context->Style.Colors[technique.enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled] : COLOR_RED);
 
-		std::string_view ui_label = technique.annotation_as_string("ui_label");
+		std::string_view ui_label = technique.annotation_as_string(u8"ui_label");
 		if (ui_label.empty() || !compile_success) ui_label = technique.name;
 		std::string label(ui_label.data(), ui_label.size());
-		label += " [" + effect.source_file.filename().u8string() + ']' + (!compile_success ? " failed to compile" : "");
+		label += " [" + effect.source_file.filename().u8string() + ']' + (!compile_success ? u8" 无法编译" : "");
 
 		if (bool status = technique.enabled; ImGui::Checkbox(label.data(), &status))
 		{
@@ -2635,14 +2663,14 @@ void reshade::runtime::draw_technique_editor()
 			const bool is_not_bottom = index < _techniques.size() - 1;
 			const float button_width = ImGui::CalcItemWidth();
 
-			if (is_not_top && ImGui::Button("Move to top", ImVec2(button_width, 0)))
+			if (is_not_top && ImGui::Button(u8"上移", ImVec2(button_width, 0)))
 			{
 				_techniques.insert(_techniques.begin(), std::move(_techniques[index]));
 				_techniques.erase(_techniques.begin() + 1 + index);
 				save_current_preset();
 				ImGui::CloseCurrentPopup();
 			}
-			if (is_not_bottom && ImGui::Button("Move to bottom", ImVec2(button_width, 0)))
+			if (is_not_bottom && ImGui::Button(u8"移动到尾", ImVec2(button_width, 0)))
 			{
 				_techniques.push_back(std::move(_techniques[index]));
 				_techniques.erase(_techniques.begin() + index);
